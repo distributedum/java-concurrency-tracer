@@ -263,27 +263,43 @@ Para a **via transparente** (agente, JDK 24+), ver a secção
 
 ```
 src/pt/sd/trace/
-  Tracer.java            # núcleo: eventos, relógios de Lamport, arestas causais, JSON
-  TracedLock.java        # Lock instrumentado (via wrappers; usar em vez de ReentrantLock)
-  TracedCondition.java   # Condition instrumentada
-  TracedReadWriteLock.java # ReadWriteLock instrumentado (vistas de leitura/escrita)
-  Hooks.java             # pontos de entrada chamados pelo bytecode injectado (via agente)
+  Tracer.java              núcleo: eventos, relógios de Lamport, causalidade, JSON
+  TracedLock.java          Lock instrumentado (via wrappers)
+  TracedCondition.java     Condition instrumentada
+  TracedReadWriteLock.java ReadWriteLock instrumentado (vistas de leitura/escrita)
+  Hooks.java               pontos de entrada chamados pelo bytecode injectado (via agente)
   agent/
-    Agent.java           # premain: regista o transformador (-javaagent)
-    LockWeaver.java      # reescrita de bytecode com a Class-File API padrão (JDK 24+)
+    Agent.java             premain: regista o transformador (-javaagent)
+    LockWeaver.java        reescrita de bytecode com a Class-File API (JDK 24+)
 demo/
-  BoundedBufferDemo.java # produtor/consumidor — via wrappers (TracedLock)
-  BoundedBufferRaw.java  # o mesmo — via agente, com ReentrantLock/Condition directos
-  ReadersWritersDemo.java # leitores/escritores — via wrappers (TracedReadWriteLock)
-  ReadersWritersRaw.java  # o mesmo — via agente, com ReentrantReadWriteLock directo
+  BoundedBufferDemo.java   produtor/consumidor — via wrappers
+  BoundedBufferRaw.java    o mesmo — via agente
+  ReadersWritersDemo.java  leitores/escritores — via wrappers
+  ReadersWritersRaw.java   o mesmo — via agente
 viz/
-  spacetime.html         # visualizador autónomo (já com um exemplo embutido)
-  template.html          # o mesmo, com marcador para injectar outro trace
-  core.js                # a lógica de processamento, isolada e testável em node
-build.sh                 # via wrappers: compila + corre + injecta o trace (JDK 21+)
-build-agent.sh           # via agente: compila + jar + corre com -javaagent (JDK 24+)
-sdtrace-agent.jar        # agente pré-compilado, pronto a usar (JDK 24+)
+  spacetime.html           visualizador autónomo (com um exemplo já embutido)
+  template.html            o mesmo, com marcador para injectar outro trace
+  core.js                  lógica de processamento, isolada e testável em node
+docs/
+  GUIA-ALUNOS.md           guia de utilização, para entregar aos alunos
+build.sh                   via wrappers: compila, corre e injecta o trace (JDK 21+)
+build-agent.sh             via agente: compila, empacota e corre com -javaagent (JDK 24+)
+sdtrace-agent.jar          artefacto pronto a usar (biblioteca E agente no mesmo ficheiro)
 ```
+
+### Artefactos versionados
+
+Dois ficheiros gerados estão intencionalmente sob controlo de versões, para que os alunos
+os possam usar sem compilar nada:
+
+- `sdtrace-agent.jar` — o *runtime* é compilado com `--release 21` e o agente com
+  `--release 24`, pelo que **o mesmo ficheiro serve as duas vias**: como biblioteca em
+  JDK 21+, e como agente em JDK 24+.
+- `viz/spacetime.html` — visualizador com um exemplo embutido, para abrir sem passos prévios.
+
+Em consequência, executar `build.sh` ou `build-agent.sh` **modifica estes dois ficheiros**
+(o JAR é recompilado e o novo *trace* é injectado no visualizador). Para descartar essas
+alterações locais: `git checkout -- sdtrace-agent.jar viz/spacetime.html`.
 
 ---
 
