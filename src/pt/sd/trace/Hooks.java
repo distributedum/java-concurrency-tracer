@@ -5,47 +5,47 @@ import java.util.IdentityHashMap;
 import java.util.Map;
 
 /**
- * Pontos de entrada invocados pelo <em>bytecode</em> injectado pelo agente
- * ({@code pt.sd.trace.agent}). Os alunos usam {@code ReentrantLock},
- * {@code ReentrantReadWriteLock} e {@code Condition} directamente e não passam
- * nomes: o agente injecta, no local de criação, uma chamada que associa cada
- * objecto (por identidade) ao nome da variável ou campo que o guarda.
+ * Entry points invoked by the <em>bytecode</em> injected by the agent
+ * ({@code pt.sd.trace.agent}). Students use {@code ReentrantLock},
+ * {@code ReentrantReadWriteLock} and {@code Condition} directly and don't pass
+ * names: the agent injects, at the creation site, a call that associates each
+ * object (by identity) with the name of the variable or field that holds it.
  *
- * <p><b>Read/write locks.</b> {@code rw.readLock()} e {@code rw.writeLock()}
- * devolvem dois objectos distintos, que ingenuamente apareceriam como dois locks
- * sem relação nenhuma — e a exclusão leitor/escritor ficaria invisível. Por isso
- * registamos cada vista como <em>vista de</em> um lock-pai: ambas herdam o nome
- * do pai (ex.: {@code rw}) e distinguem-se pelo <b>modo</b> ({@code READ} ou
- * {@code WRITE}). Assim o {@link Tracer} vê um único lock com dois modos de
- * posse — que é exactamente o que ele é.
+ * <p><b>Read/write locks.</b> {@code rw.readLock()} and {@code rw.writeLock()}
+ * return two distinct objects, which naively would appear as two unrelated
+ * locks — and the reader/writer exclusion would be invisible. So we register
+ * each view as a <em>view of</em> a parent lock: both inherit the parent's name
+ * (e.g. {@code rw}) and are distinguished by their <b>mode</b> ({@code READ} or
+ * {@code WRITE}). This way the {@link Tracer} sees a single lock with two
+ * ownership modes — which is exactly what it is.
  */
 public final class Hooks {
 
     private Hooks() {}
 
-    /** Objecto (lock ou condição) -> nome legível. */
+    /** Object (lock or condition) -> readable name. */
     private static final Map<Object, String> NAME =
             Collections.synchronizedMap(new IdentityHashMap<>());
-    /** Condição -> lock que a criou (para ligar o await ao lock no diagrama). */
+    /** Condition -> lock that created it (to link the await to the lock in the diagram). */
     private static final Map<Object, Object> OWNER =
             Collections.synchronizedMap(new IdentityHashMap<>());
-    /** Vista (read/write lock) -> ReadWriteLock que a produziu. */
+    /** View (read/write lock) -> ReadWriteLock that produced it. */
     private static final Map<Object, Object> PARENT =
             Collections.synchronizedMap(new IdentityHashMap<>());
-    /** Vista -> modo de posse (READ ou WRITE). */
+    /** View -> ownership mode (READ or WRITE). */
     private static final Map<Object, String> MODE =
             Collections.synchronizedMap(new IdentityHashMap<>());
 
-    // ---- Registo (injectado nos locais de criação) --------------------------
+    // ---- Registration (injected at creation sites) ---------------------------
 
-    /** Associa um nome a um lock ou condição. O primeiro nome ganha. */
+    /** Associates a name with a lock or condition. The first name wins. */
     public static void nameThing(Object o, String name) {
         if (o != null && name != null) NAME.putIfAbsent(o, name);
     }
 
     /**
-     * Regista que {@code cond} foi criada por {@code lock} e devolve {@code cond}.
-     * Injectado logo após {@code lock.newCondition()}.
+     * Registers that {@code cond} was created by {@code lock} and returns {@code cond}.
+     * Injected right after {@code lock.newCondition()}.
      */
     public static Object linkOwner(Object lock, Object cond) {
         if (cond != null && lock != null) OWNER.putIfAbsent(cond, lock);
@@ -53,8 +53,8 @@ public final class Hooks {
     }
 
     /**
-     * Regista que {@code view} e a vista de leitura/escrita de {@code parent} e
-     * devolve {@code view}. Injectado logo apos {@code rw.readLock()} /
+     * Registers that {@code view} is the read/write view of {@code parent} and
+     * returns {@code view}. Injected right after {@code rw.readLock()} /
      * {@code rw.writeLock()}.
      */
     public static Object linkView(Object parent, Object view, String mode) {
@@ -65,19 +65,19 @@ public final class Hooks {
         return view;
     }
 
-    // ---- Resolucao ----------------------------------------------------------
+    // ---- Resolution -----------------------------------------------------------
 
-    /** Nome de um lock. Uma vista read/write herda o nome do ReadWriteLock pai. */
+    /** Name of a lock. A read/write view inherits the name of its parent ReadWriteLock. */
     private static String nameOf(Object o) {
         if (o == null) return "?";
         Object parent = PARENT.get(o);
-        if (parent != null) return nameOf(parent);   // vista -> nome do pai
+        if (parent != null) return nameOf(parent);   // view -> parent's name
         String n = NAME.get(o);
         return (n != null) ? n
                 : o.getClass().getSimpleName() + "@" + Integer.toHexString(System.identityHashCode(o));
     }
 
-    /** Modo: READ/WRITE nas vistas de um RW lock, EXCLUSIVE nos restantes. */
+    /** Mode: READ/WRITE on the views of an RW lock, EXCLUSIVE on everything else. */
     private static String modeOf(Object lock) {
         String m = (lock == null) ? null : MODE.get(lock);
         return (m != null) ? m : Tracer.EXCLUSIVE;
@@ -85,7 +85,7 @@ public final class Hooks {
 
     private static Object ownerLock(Object cond) { return (cond == null) ? null : OWNER.get(cond); }
 
-    // ---- Eventos (injectados nos locais de chamada) -------------------------
+    // ---- Events (injected at call sites) -------------------------------------
 
     public static void onLockRequest(Object l)  { Tracer.get().lockRequest(nameOf(l),  modeOf(l)); }
     public static void onLockAcquired(Object l) { Tracer.get().lockAcquired(nameOf(l), modeOf(l)); }

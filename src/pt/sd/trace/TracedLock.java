@@ -6,11 +6,11 @@ import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
 
 /**
- * Um {@link Lock} instrumentado. Os alunos usam-no exactamente como um
- * ReentrantLock — mas cada operação relevante é registada no {@link Tracer}.
+ * An instrumented {@link Lock}. Students use it exactly like a ReentrantLock —
+ * but each relevant operation is recorded in the {@link Tracer}.
  *
  *   Lock l = new TracedLock("bufferLock");
- *   Condition naoVazio = l.newCondition("naoVazio");
+ *   Condition notEmpty = l.newCondition("notEmpty");
  */
 public final class TracedLock implements Lock {
 
@@ -29,9 +29,9 @@ public final class TracedLock implements Lock {
 
     @Override
     public void lock() {
-        tracer.lockRequest(name);   // pediu o lock (pode bloquear a seguir)
+        tracer.lockRequest(name);   // requested the lock (may block next)
         inner.lock();
-        tracer.lockAcquired(name);  // obteve o lock
+        tracer.lockAcquired(name);  // got the lock
     }
 
     @Override
@@ -58,7 +58,7 @@ public final class TracedLock implements Lock {
 
     @Override
     public void unlock() {
-        tracer.lockReleased(name);  // regista ANTES de libertar de facto
+        tracer.lockReleased(name);  // recorded BEFORE actually releasing
         inner.unlock();
     }
 
@@ -67,7 +67,7 @@ public final class TracedLock implements Lock {
         return newCondition("cond@" + name);
     }
 
-    /** Cria uma condição instrumentada com um nome legível. */
+    /** Creates an instrumented condition with a readable name. */
     public TracedCondition newCondition(String condName) {
         return new TracedCondition(inner.newCondition(), name, condName);
     }

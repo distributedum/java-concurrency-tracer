@@ -11,47 +11,47 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * Tracer centralizado para instrumentar execuções concorrentes com locks e
- * variáveis de condição.
+ * Centralized tracer for instrumenting concurrent executions with locks and
+ * condition variables.
  *
- * Regista eventos numa ordem total (via um contador global) e atribui a cada
- * evento:
- *   - um relógio lógico de Lamport, por thread;
- *   - um instante físico (nanos relativos ao arranque), para posicionar
- *     visualmente e ver a duração real dos bloqueios;
- *   - uma eventual aresta causal (happens-before) entre threads, usada para
- *     desenhar as setas do diagrama e para o merge do relógio de Lamport.
+ * Records events in a total order (via a global counter) and assigns each
+ * event:
+ *   - a per-thread logical Lamport clock;
+ *   - a physical instant (nanos relative to startup), to position it visually
+ *     and see the actual duration of blocking;
+ *   - an optional causal edge (happens-before) between threads, used to draw
+ *     the diagram's arrows and to merge the Lamport clock.
  *
- * Duas famílias de arestas causais são inferidas:
- *   1. HANDOFF de lock: quando uma thread adquire um lock, liga-se ao evento
- *      de libertação (RELEASE ou AWAIT_BEGIN) mais recente desse lock, se tiver
- *      sido feito por outra thread.
- *   2. SIGNAL -> WAKEUP: um signal()/signalAll() sobre uma condição liga-se ao
- *      regresso do await() da(s) thread(s) em espera (emparelhamento FIFO).
+ * Two families of causal edges are inferred:
+ *   1. Lock HANDOFF: when a thread acquires a lock, it links to the most
+ *      recent release event (RELEASE or AWAIT_BEGIN) of that lock, if it was
+ *      done by another thread.
+ *   2. SIGNAL -> WAKEUP: a signal()/signalAll() on a condition links to the
+ *      return of the await() of the waiting thread(s) (FIFO pairing).
  *
- * NOTA PEDAGÓGICA: o emparelhamento signal->await é uma aproximação (FIFO, e não
- * modela wakeups espúrios), mas corresponde ao modelo mental que os alunos usam
- * e é suficiente para visualizar a causalidade. Está documentado como tal.
+ * TEACHING NOTE: the signal->await pairing is an approximation (FIFO, and it
+ * doesn't model spurious wakeups), but it matches the mental model students
+ * use and is enough to visualize causality. It's documented as such.
  *
- * O registo é totalmente serializado (bloco synchronized) para garantir uma
- * ordem global consistente e acesso seguro aos mapas de estado.
+ * Recording is fully serialized (a synchronized block) to guarantee a
+ * consistent global order and safe access to the state maps.
  */
 public final class Tracer {
 
-    /** Um evento registado. Campos públicos para facilitar a serialização. */
+    /** A recorded event. Public fields to make serialization easier. */
     public static final class Event {
-        public final long   seq;      // ordem total de registo
-        public final long   lamport;  // relógio lógico (por thread)
-        public final long   tNanos;   // instante físico relativo ao arranque
-        public final String thread;   // nome da thread
-        public final long   tid;      // id da thread
-        public final String kind;     // tipo de evento
-        public final String lock;     // nome do lock (ou null)
-        public final String cond;     // nome da condição (ou null)
-        public final String detail;   // texto livre (ou null)
-        public final String mode;     // EXCLUSIVE | READ | WRITE (ou null)
-        public final long[] causes;   // seqs dos eventos causadores (pode ter varios!)
-        public final Long   cause;    // primeira causa (compatibilidade; null se nenhuma)
+        public final long   seq;      // total recording order
+        public final long   lamport;  // logical clock (per thread)
+        public final long   tNanos;   // physical instant relative to startup
+        public final String thread;   // thread name
+        public final long   tid;      // thread id
+        public final String kind;     // event type
+        public final String lock;     // lock name (or null)
+        public final String cond;     // condition name (or null)
+        public final String detail;   // free text (or null)
+        public final String mode;     // EXCLUSIVE | READ | WRITE (or null)
+        public final long[] causes;   // seqs of the causing events (can be several!)
+        public final Long   cause;    // first cause (compatibility; null if none)
 
         Event(long seq, long lamport, long tNanos, String thread, long tid,
               String kind, String lock, String cond, String detail, String mode, long[] causes) {
@@ -63,10 +63,10 @@ public final class Tracer {
         }
     }
 
-    /** Modos de posse de um lock. */
-    public static final String EXCLUSIVE = "EXCLUSIVE"; // ReentrantLock (ou write lock visto como exclusivo)
-    public static final String READ      = "READ";      // ReadWriteLock em modo partilhado
-    public static final String WRITE     = "WRITE";     // ReadWriteLock em modo exclusivo
+    /** Lock ownership modes. */
+    public static final String EXCLUSIVE = "EXCLUSIVE"; // ReentrantLock (or a write lock seen as exclusive)
+    public static final String READ      = "READ";      // ReadWriteLock in shared mode
+    public static final String WRITE     = "WRITE";     // ReadWriteLock in exclusive mode
 
     private static boolean shared(String mode) { return READ.equals(mode); }
 
@@ -78,32 +78,32 @@ public final class Tracer {
 
     private final List<Event> events = new ArrayList<>();
     private final Map<Long, Long> lamportByTid = new HashMap<>();
-    // Último evento de libertação por um detentor EXCLUSIVO (ou escritor) desse lock.
-    // Usado pelos LEITORES: a sua única dependência é a saída do último escritor.
+    // Last release event by an EXCLUSIVE holder (or writer) of that lock.
+    // Used by READERS: their only dependency is the exit of the last writer.
     private final Map<String, Event> lastExclusiveReleaseByLock = new HashMap<>();
 
-    // Detentores actuais de cada lock: tid -> profundidade (reentrância).
-    // Com um read lock pode haver VÁRIOS em simultâneo — é esse o ponto.
+    // Current holders of each lock: tid -> depth (reentrancy).
+    // With a read lock there can be SEVERAL at once — that's the whole point.
     private final Map<String, Map<Long, Integer>> holdersByLock = new HashMap<>();
-    // Libertações acumuladas desde que o lock deixou de estar vazio.
+    // Releases accumulated since the lock last became empty.
     private final Map<String, List<Event>> pendingReleasesByLock = new HashMap<>();
-    // A COORTE: o grupo de libertações que esvaziou o lock da última vez.
-    // Um detentor exclusivo (escritor) só entra quando TODOS saíram, por isso
-    // depende de TODAS estas libertações — e não apenas da última registada.
+    // The COHORT: the group of releases that last emptied the lock.
+    // An exclusive holder (writer) only enters once EVERYONE has left, so it
+    // depends on ALL of these releases — not just the last one recorded.
     private final Map<String, List<Event>> lastCohortByLock = new HashMap<>();
-    // Fila FIFO de threads em espera, por condição (evento AWAIT_BEGIN).
+    // FIFO queue of waiting threads, per condition (AWAIT_BEGIN event).
     private final Map<String, Deque<Event>> waitersByCond = new HashMap<>();
-    // Sinal pendente que vai acordar uma thread: tid -> evento SIGNAL/SIGNAL_ALL.
+    // Pending signal that will wake up a thread: tid -> SIGNAL/SIGNAL_ALL event.
     private final Map<Long, Event> pendingWakeup = new HashMap<>();
 
     private Tracer() {
-        // Descarrega automaticamente para trace.json no fim, por conveniência.
+        // Automatically dumps to trace.json at the end, for convenience.
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             try { dump(Path.of("trace.json")); } catch (IOException ignored) {}
         }));
     }
 
-    // ---- API interna usada por TracedLock / TracedCondition -----------------
+    // ---- Internal API used by TracedLock / TracedCondition ------------------
 
     void lockRequest(String lock)   { lockRequest(lock, EXCLUSIVE); }
     void lockAcquired(String lock)  { lockAcquired(lock, EXCLUSIVE); }
@@ -120,15 +120,15 @@ public final class Tracer {
     void signal(String cond)     { emit("SIGNAL",     null, cond, null, null); }
     void signalAll(String cond)  { emit("SIGNAL_ALL", null, cond, null, null); }
 
-    // ---- API pública para os alunos ----------------------------------------
+    // ---- Public API for students ---------------------------------------------
 
-    /** Marca um evento aplicacional arbitrário (ex.: "produziu 7"). */
+    /** Marks an arbitrary application-level event (e.g. "produced 7"). */
     public static void note(String detail) { INSTANCE.emit("NOTE", null, null, detail, null); }
 
-    /** Marca o fim de uma thread (opcional; melhora o diagrama). */
+    /** Marks the end of a thread (optional; improves the diagram). */
     public static void threadDone() { INSTANCE.emit("THREAD_END", null, null, null, null); }
 
-    /** Limpa o estado (útil para correr vários cenários no mesmo processo). */
+    /** Clears the state (useful for running several scenarios in the same process). */
     public static synchronized void reset() {
         INSTANCE.events.clear();
         INSTANCE.lamportByTid.clear();
@@ -141,7 +141,7 @@ public final class Tracer {
         INSTANCE.nextSeq = 0L;
     }
 
-    // ---- Núcleo -------------------------------------------------------------
+    // ---- Core -----------------------------------------------------------------
 
     private synchronized Event emit(String kind, String lock, String cond, String detail, String mode) {
         Thread th = Thread.currentThread();
@@ -150,21 +150,21 @@ public final class Tracer {
         long tNanos = System.nanoTime() - t0;
         long seq = nextSeq++;
 
-        // Determinar as arestas causais (podem ser VÁRIAS).
+        // Determine the causal edges (there can be SEVERAL).
         List<Event> causes = new ArrayList<>();
         if ("LOCK_ACQUIRED".equals(kind)) {
             if (shared(mode)) {
-                // LEITOR: não é bloqueado por outros leitores. A sua única dependência é
-                // a saída do último ESCRITOR (que "publica" o valor que ele vai ler).
-                // Ligá-lo a outro leitor seria inventar causalidade.
+                // READER: not blocked by other readers. Its only dependency is
+                // the exit of the last WRITER (which "publishes" the value it will read).
+                // Linking it to another reader would be inventing causality.
                 Event rel = lastExclusiveReleaseByLock.get(lock);
                 if (rel != null && rel.tid != tid) causes.add(rel);
             } else {
-                // EXCLUSIVO (lock normal ou ESCRITOR): só entra quando TODOS saíram.
-                // Depende, portanto, de TODAS as libertações da coorte que esvaziou o
-                // lock — com 3 leitores, são 3 arestas, não uma. Ficar só pela última
-                // registada perderia arestas reais e podia violar a condição de Lamport
-                // (se um leitor que saiu antes tivesse relógio mais alto).
+                // EXCLUSIVE (plain lock or WRITER): only enters once EVERYONE has left.
+                // It therefore depends on ALL the releases of the cohort that emptied the
+                // lock — with 3 readers, that's 3 edges, not one. Keeping just the last
+                // one recorded would drop real edges and could violate the Lamport
+                // condition (if a reader that left earlier had a higher clock).
                 List<Event> cohort = lastCohortByLock.get(lock);
                 if (cohort != null) {
                     for (Event r : cohort) if (r.tid != tid) causes.add(r);
@@ -175,7 +175,7 @@ public final class Tracer {
             if (sig != null) causes.add(sig);
         }
 
-        // Relógio de Lamport: max sobre TODAS as causas.
+        // Lamport clock: max over ALL causes.
         long local = lamportByTid.getOrDefault(tid, 0L);
         long base = local;
         for (Event c : causes) base = Math.max(base, c.lamport);
@@ -188,10 +188,10 @@ public final class Tracer {
         Event e = new Event(seq, lamport, tNanos, tname, tid, kind, lock, cond,
                             detail, mode, causeSeqs);
 
-        // Efeitos posteriores no estado partilhado.
+        // Downstream effects on shared state.
         switch (kind) {
             case "LOCK_ACQUIRED", "AWAIT_WAKEUP" -> {
-                // Passa a deter o lock (o await regressa readquirindo-o).
+                // Becomes a holder of the lock (the await returns by reacquiring it).
                 holdersByLock.computeIfAbsent(lock, k -> new HashMap<>())
                              .merge(tid, 1, Integer::sum);
             }
@@ -200,17 +200,17 @@ public final class Tracer {
 
                 Map<Long, Integer> holders = holdersByLock.computeIfAbsent(lock, k -> new HashMap<>());
                 if ("AWAIT_BEGIN".equals(kind)) {
-                    holders.remove(tid);              // o await liberta o lock por completo
+                    holders.remove(tid);              // the await fully releases the lock
                 } else {
-                    Integer d = holders.get(tid);     // unlock: desce um nível de reentrância
+                    Integer d = holders.get(tid);     // unlock: goes down one reentrancy level
                     if (d == null || d <= 1) holders.remove(tid); else holders.put(tid, d - 1);
                 }
 
                 List<Event> pend = pendingReleasesByLock.computeIfAbsent(lock, k -> new ArrayList<>());
                 pend.add(e);
                 if (holders.isEmpty()) {
-                    // O lock ficou VAZIO: esta coorte é a que o próximo detentor
-                    // exclusivo teve de esperar por inteiro.
+                    // The lock became EMPTY: this cohort is the one the next
+                    // exclusive holder had to wait for in full.
                     lastCohortByLock.put(lock, pend);
                     pendingReleasesByLock.put(lock, new ArrayList<>());
                 }
@@ -236,9 +236,9 @@ public final class Tracer {
         return e;
     }
 
-    // ---- Serialização JSON (sem dependências) -------------------------------
+    // ---- JSON serialization (no dependencies) --------------------------------
 
-    /** Escreve o trace em JSON para o caminho dado. */
+    /** Writes the trace as JSON to the given path. */
     public synchronized void dump(Path path) throws IOException {
         Files.writeString(path, toJson());
     }

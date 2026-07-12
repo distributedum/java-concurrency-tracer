@@ -1,20 +1,20 @@
-// Lógica de processamento do trace — partilhada entre o teste (node) e o HTML.
-// Não depende do DOM.
+// Trace processing logic — shared between the test (node) and the HTML.
+// Does not depend on the DOM.
 
-// Estados de uma thread ao longo do tempo.
+// States of a thread over time.
 const STATE = {
-  RUNNING: "RUNNING",     // a executar, sem o lock
-  HOLDING: "HOLDING",     // posse EXCLUSIVA do lock (secção crítica)
-  HOLDING_SHARED: "HOLDING_SHARED", // posse PARTILHADA (read lock de um RW): vários ao mesmo tempo
-  BLOCKED: "BLOCKED",     // à espera de adquirir o lock
-  WAITING: "WAITING",     // à espera numa variável de condição
+  RUNNING: "RUNNING",     // running, without the lock
+  HOLDING: "HOLDING",     // EXCLUSIVE ownership of the lock (critical section)
+  HOLDING_SHARED: "HOLDING_SHARED", // SHARED ownership (read lock of an RW lock): several at once
+  BLOCKED: "BLOCKED",     // waiting to acquire the lock
+  WAITING: "WAITING",     // waiting on a condition variable
   TERMINATED: "TERMINATED"
 };
 
-// Ordena por seq (ordem total de registo).
+// Sorts by seq (total recording order).
 function bySeq(a, b) { return a.seq - b.seq; }
 
-// Lista de threads pela ordem de primeira aparição.
+// List of threads in order of first appearance.
 function threadOrder(events) {
   const seen = [];
   const set = new Set();
@@ -24,9 +24,9 @@ function threadOrder(events) {
   return seen;
 }
 
-// Devolve, por thread, a lista de segmentos de estado:
-//   { state, a, b }  onde a/b são valores no eixo escolhido (t físico ou lamport).
-// axisKey = "t" (nanos) ou "lamport".
+// Returns, per thread, the list of state segments:
+//   { state, a, b }  where a/b are values on the chosen axis (physical t or lamport).
+// axisKey = "t" (nanos) or "lamport".
 function stateSegments(events, axisKey) {
   const byThread = new Map();
   for (const e of events) {
@@ -52,7 +52,7 @@ function stateSegments(events, axisKey) {
         case "AWAIT_WAKEUP":  push(at); state = STATE.HOLDING; break;
         case "LOCK_RELEASED": push(at); state = STATE.RUNNING; break;
         case "THREAD_END":    push(at); state = STATE.TERMINATED; break;
-        default: /* NOTE, SIGNAL, SIGNAL_ALL: não muda o estado */ break;
+        default: /* NOTE, SIGNAL, SIGNAL_ALL: doesn't change the state */ break;
       }
     }
     result.set(thread, { segments: segs, last: evs[evs.length - 1] });
@@ -60,14 +60,14 @@ function stateSegments(events, axisKey) {
   return result;
 }
 
-// Amplitude do eixo escolhido.
+// Range of the chosen axis.
 function axisRange(events, axisKey) {
   let lo = Infinity, hi = -Infinity;
   for (const e of events) { lo = Math.min(lo, e[axisKey]); hi = Math.max(hi, e[axisKey]); }
   return [lo, hi];
 }
 
-// Índice seq -> evento, para resolver causas.
+// Index seq -> event, to resolve causes.
 function indexBySeq(events) {
   const m = new Map();
   for (const e of events) m.set(e.seq, e);

@@ -17,22 +17,22 @@ import java.util.HashMap;
 import java.util.Map;
 
 /**
- * Reescreve o bytecode das classes dos alunos para instrumentar, de forma
- * transparente, o uso de {@code java.util.concurrent.locks.Lock} e
- * {@code Condition} — sem que troquem {@code ReentrantLock} por
- * {@code TracedLock} nem passem nomes à mão.
+ * Rewrites student classes' bytecode to transparently instrument the use of
+ * {@code java.util.concurrent.locks.Lock} and {@code Condition} — without
+ * them having to swap {@code ReentrantLock} for {@code TracedLock} or pass
+ * names by hand.
  *
- * Usa a Class-File API padrão ({@code java.lang.classfile}, final no JDK 24),
- * pelo que não há dependências externas.
+ * Uses the standard Class-File API ({@code java.lang.classfile}, final in
+ * JDK 24), so there are no external dependencies.
  *
- * Duas coisas são injectadas:
- *   1. No local de CRIAÇÃO ({@code new ReentrantLock()} e
- *      {@code lock.newCondition()}), uma chamada que associa o objecto ao nome
- *      da variável/campo que o guarda. Cadeia de nomeação:
- *      campo -> variável local (precisa de {@code -g}) -> {@code Tipo@Classe:linha}.
- *   2. Nos locais de CHAMADA ({@code lock()}, {@code unlock()}, {@code await()},
- *      {@code signal()}, {@code signalAll()}), chamadas aos {@code Hooks} que
- *      registam os eventos, passando o próprio objecto para resolução do nome.
+ * Two things are injected:
+ *   1. At the CREATION site ({@code new ReentrantLock()} and
+ *      {@code lock.newCondition()}), a call that associates the object with
+ *      the name of the variable/field that holds it. Naming chain:
+ *      field -> local variable (needs {@code -g}) -> {@code Type@Class:line}.
+ *   2. At the CALL sites ({@code lock()}, {@code unlock()}, {@code await()},
+ *      {@code signal()}, {@code signalAll()}), calls to {@code Hooks} that
+ *      record the events, passing the object itself for name resolution.
  */
 final class LockWeaver {
 
@@ -64,7 +64,7 @@ final class LockWeaver {
                         int[] line = { -1 };
                         Pending[] pending = { null };
                         methodBuilder.transformCode(code, (xb, e) -> {
-                            // 1) Fecho de um "pending" (criação à espera do consumidor).
+                            // 1) Closing a "pending" (creation waiting for its consumer).
                             if (pending[0] != null && e instanceof java.lang.classfile.Instruction) {
                                 Pending p = pending[0];
                                 if (e instanceof StoreInstruction si
@@ -81,22 +81,22 @@ final class LockWeaver {
                                     xb.with(e);
                                     return;
                                 }
-                                // Consumidor não é um store reconhecido: nomeia com fallback.
+                                // Consumer isn't a recognized store: name it with the fallback.
                                 emitName(xb, p.fallback);
                                 pending[0] = null;
-                                // continua para tratar 'e' normalmente
+                                // fall through to handle 'e' normally
                             }
 
-                            // 2) Actualiza linha corrente (para o fallback).
+                            // 2) Update the current line (for the fallback).
                             if (e instanceof LineNumber ln) { line[0] = ln.line(); xb.with(e); return; }
 
-                            // 3) Invocações relevantes.
+                            // 3) Relevant invocations.
                             if (e instanceof InvokeInstruction inv) {
                                 String owner = inv.owner().asInternalName();
                                 String nm    = inv.name().stringValue();
                                 String desc  = inv.typeSymbol().descriptorString();
 
-                                // Construtor de lock -> abre pending para nomear no consumidor.
+                                // Lock constructor -> opens a pending to name at its consumer.
                                 if (inv.opcode() == java.lang.classfile.Opcode.INVOKESPECIAL
                                         && nm.equals("<init>")
                                         && (owner.equals(RLOCK) || owner.equals(RRWLOCK))) {
@@ -106,9 +106,9 @@ final class LockWeaver {
                                 }
 
                                 if (owner.startsWith(LOCKS_PKG)) {
-                                    // Vistas de um ReadWriteLock: readLock()/writeLock().
-                                    // Sem isto, as duas vistas apareceriam como dois locks
-                                    // independentes e a exclusao leitor/escritor ficaria invisivel.
+                                    // Views of a ReadWriteLock: readLock()/writeLock().
+                                    // Without this, the two views would appear as two
+                                    // independent locks and the reader/writer exclusion would be invisible.
                                     if ((nm.equals("readLock") || nm.equals("writeLock")) && desc.startsWith("()")) {
                                         boolean isRead = nm.equals("readLock");
                                         xb.dup();                       // [rw, rw]

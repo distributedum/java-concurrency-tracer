@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Vertente TRANSPARENTE (agente): os alunos NÃO trocam ReentrantLock por
-# TracedLock nem passam nomes. Requer JDK 24+ (a Class-File API é final no 24;
-# recomendado o próximo LTS quando disponível).
+# TRANSPARENT (agent) path: students do NOT swap ReentrantLock for TracedLock
+# and don't pass names. Requires JDK 24+ (the Class-File API is final in 24;
+# the next LTS is recommended once available).
 #
-# Uso: ./build-agent.sh <ficheiro-demo.java> <ClasseComMain>
-# Ex.: ./build-agent.sh demo/BoundedBufferRaw.java BoundedBufferRaw
+# Usage: ./build-agent.sh <demo-file.java> <ClassWithMain>
+# E.g.:  ./build-agent.sh demo/BoundedBufferRaw.java BoundedBufferRaw
 set -euo pipefail
 
 SRC="${1:-demo/BoundedBufferRaw.java}"
@@ -18,16 +18,16 @@ JAVA="${JAVA:-java}"
 ver="$("$JAVA" -version 2>&1 | head -1)"
 echo "» JDK: $ver"
 
-echo "» a compilar runtime + agente…"
+echo "» compiling runtime + agent…"
 mkdir -p out
-# -g é importante: sem a tabela de variáveis locais, locks/condições guardados
-# em variáveis LOCAIS caem no fallback Tipo@Classe:linha (campos são sempre ok).
-# O runtime vai para bytecode 21 e o agente para 24: assim O MESMO jar serve as duas
-# vias (biblioteca em JDK 21+, agente em JDK 24+).
+# -g matters: without the local variable table, locks/conditions held in
+# LOCAL variables fall back to Type@Class:line (fields are always fine).
+# The runtime targets bytecode 21 and the agent targets 24: this way THE SAME
+# jar serves both paths (library on JDK 21+, agent on JDK 24+).
 "$JAVAC" --release 21 -g -encoding UTF-8 -d out src/pt/sd/trace/*.java
 "$JAVAC" --release 24 -g -encoding UTF-8 -cp out -d out src/pt/sd/trace/agent/*.java
 
-echo "» a empacotar sdtrace-agent.jar…"
+echo "» packaging sdtrace-agent.jar…"
 cat > .agent-mf.txt <<'EOF'
 Manifest-Version: 1.0
 Premain-Class: pt.sd.trace.agent.Agent
@@ -36,10 +36,10 @@ EOF
 "${JAVAC%javac}jar" cfm sdtrace-agent.jar .agent-mf.txt -C out pt
 rm -f .agent-mf.txt
 
-echo "» a compilar o exemplo ($SRC)…"
+echo "» compiling the example ($SRC)…"
 "$JAVAC" -g -encoding UTF-8 -cp out -d out "$SRC"
 
-echo "» a correr $MAIN com -javaagent (instrumentação transparente)…"
+echo "» running $MAIN with -javaagent (transparent instrumentation)…"
 "$JAVA" -javaagent:sdtrace-agent.jar -cp out "$MAIN"
 
 if command -v python3 >/dev/null 2>&1; then
@@ -48,10 +48,10 @@ import re
 tpl=open('viz/template.html').read(); trace=open('trace.json').read().strip()
 open('viz/spacetime.html','w').write(
   re.sub(r'/\*__TRACE__\*/.*?/\*__END__\*/','/*__TRACE__*/'+trace+'/*__END__*/',tpl,flags=re.S))
-print("» viz/spacetime.html actualizado")
+print("» viz/spacetime.html updated")
 PY
 else
-  echo "» python3 não encontrado: abra viz/spacetime.html e use “Abrir trace.json…”"
+  echo "» python3 not found: open viz/spacetime.html and use “Open trace.json…”"
 fi
 
-echo "» pronto. Abra viz/spacetime.html no browser."
+echo "» done. Open viz/spacetime.html in your browser."

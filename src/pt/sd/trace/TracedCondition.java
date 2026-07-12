@@ -5,9 +5,9 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.Condition;
 
 /**
- * Uma {@link Condition} instrumentada. await() regista a entrada em espera
- * (que liberta o lock) e o despertar (que readquire o lock); signal()/signalAll()
- * registam a notificação.
+ * An instrumented {@link Condition}. await() records entering the wait (which
+ * releases the lock) and waking up (which reacquires the lock); signal()/signalAll()
+ * record the notification.
  */
 public final class TracedCondition implements Condition {
 
@@ -16,7 +16,7 @@ public final class TracedCondition implements Condition {
     private final String condName;
     private final Tracer tracer = Tracer.get();
 
-    private final String mode;   // EXCLUSIVE (lock normal) ou WRITE (write lock de um RW)
+    private final String mode;   // EXCLUSIVE (plain lock) or WRITE (write lock of an RW lock)
 
     TracedCondition(Condition inner, String lockName, String condName) {
         this(inner, lockName, condName, Tracer.EXCLUSIVE);
@@ -33,11 +33,11 @@ public final class TracedCondition implements Condition {
 
     @Override
     public void await() throws InterruptedException {
-        tracer.awaitBegin(lockName, condName, mode);   // liberta o lock e adormece
+        tracer.awaitBegin(lockName, condName, mode);   // releases the lock and sleeps
         try {
             inner.await();
         } finally {
-            tracer.awaitWakeup(lockName, condName, mode); // acordou e readquiriu o lock
+            tracer.awaitWakeup(lockName, condName, mode); // woke up and reacquired the lock
         }
     }
 

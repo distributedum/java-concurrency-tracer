@@ -7,24 +7,24 @@ import java.util.concurrent.locks.ReadWriteLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 /**
- * Um {@link ReadWriteLock} instrumentado — o equivalente do {@link TracedLock}
- * para o problema dos leitores/escritores.
+ * An instrumented {@link ReadWriteLock} — the {@link TracedLock} equivalent
+ * for the readers/writers problem.
  *
  * <pre>{@code
- *   TracedReadWriteLock rw = new TracedReadWriteLock("dados");
- *   rw.readLock().lock();    // posse PARTILHADA  (varios leitores ao mesmo tempo)
- *   rw.writeLock().lock();   // posse EXCLUSIVA   (exclui toda a gente)
+ *   TracedReadWriteLock rw = new TracedReadWriteLock("data");
+ *   rw.readLock().lock();    // SHARED ownership     (several readers at once)
+ *   rw.writeLock().lock();   // EXCLUSIVE ownership   (excludes everyone else)
  * }</pre>
  *
- * As duas vistas partilham o <b>mesmo nome</b> ({@code dados}) e distinguem-se
- * pelo <b>modo</b> ({@code READ} / {@code WRITE}). E isso que permite ao
- * {@link Tracer} perceber que sao o mesmo lock e desenhar a exclusao entre
- * leitores e escritores — se fossem dois nomes diferentes, nao haveria uma unica
- * seta a explicar por que motivo o escritor ficou bloqueado.
+ * The two views share the <b>same name</b> ({@code data}) and are distinguished
+ * by their <b>mode</b> ({@code READ} / {@code WRITE}). That's what lets the
+ * {@link Tracer} realize they're the same lock and draw the exclusion between
+ * readers and writers — if they had two different names, there would be no
+ * single arrow explaining why the writer was blocked.
  *
- * <p>Nota: so o <em>write lock</em> suporta variaveis de condicao. Chamar
- * {@code readLock().newCondition()} lanca {@link UnsupportedOperationException}
- * — e assim no Java e mantemos o mesmo comportamento.
+ * <p>Note: only the <em>write lock</em> supports condition variables. Calling
+ * {@code readLock().newCondition()} throws {@link UnsupportedOperationException}
+ * — that's how it is in Java, and we keep the same behavior.
  */
 public final class TracedReadWriteLock implements ReadWriteLock {
 
@@ -47,11 +47,11 @@ public final class TracedReadWriteLock implements ReadWriteLock {
     @Override public View readLock()  { return read; }
     @Override public View writeLock() { return write; }
 
-    /** Uma das duas vistas (leitura ou escrita) do mesmo lock. */
+    /** One of the two views (read or write) of the same lock. */
     public static final class View implements Lock {
         private final Lock inner;
         private final String lockName;
-        private final String mode;      // Tracer.READ ou Tracer.WRITE
+        private final String mode;      // Tracer.READ or Tracer.WRITE
         private final Tracer tracer = Tracer.get();
 
         View(Lock inner, String lockName, String mode) {
@@ -91,15 +91,15 @@ public final class TracedReadWriteLock implements ReadWriteLock {
 
         @Override
         public void unlock() {
-            tracer.lockReleased(lockName, mode);   // regista ANTES de libertar
+            tracer.lockReleased(lockName, mode);   // recorded BEFORE releasing
             inner.unlock();
         }
 
-        /** So valido no write lock (o read lock lanca UnsupportedOperationException). */
+        /** Only valid on the write lock (the read lock throws UnsupportedOperationException). */
         @Override
         public Condition newCondition() { return newCondition("cond@" + lockName); }
 
-        /** Condicao instrumentada com nome legivel. So valida no write lock. */
+        /** Instrumented condition with a readable name. Only valid on the write lock. */
         public TracedCondition newCondition(String condName) {
             return new TracedCondition(inner.newCondition(), lockName, condName, mode);
         }
