@@ -12,7 +12,7 @@ echo "» a compilar…"
 mkdir -p out
 javac -g -encoding UTF-8 -d out src/pt/sd/trace/*.java "$SRC"
 
-echo "» a correr $MAIN…"
+echo "» a correr ${MAIN}…"
 java -cp out "$MAIN"
 
 # Injecta o trace.json no template, produzindo um spacetime.html pronto a abrir.
