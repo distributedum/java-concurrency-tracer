@@ -1,0 +1,13 @@
+# Artefactos de compilação
+out/
+*.class
+
+# Traces gerados pelas execuções
+trace.json
+
+# Ambientes e ferramentas
+.idea/
+*.iml
+.vscode/
+node_modules/
+.DS_Store

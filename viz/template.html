@@ -1,0 +1,692 @@
+<!doctype html>
+<html lang="pt">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Diagrama espaço-temporal — locks &amp; variáveis de condição</title>
+<style>
+  :root{
+    --bg:#0a0e1a; --panel:#0f1524; --panel2:#0c1120; --rule:#1f2a42; --rule-soft:#161f33;
+    --ink:#e7ecfb; --muted:#8391b0; --faint:#4a597b;
+    --hold:#2dd4bf; --shared:#5eead4; --block:#f5a524; --wait:#a78bfa; --signal:#f472b6;
+    --lifeline:#2a3a5e; --handoff:#5b6b93;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%}
+  body{
+    background:var(--bg); color:var(--ink);
+    font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+    display:flex; flex-direction:column; height:100vh;
+  }
+  .mono{font-family:ui-monospace,"SFMono-Regular",Menlo,"JetBrains Mono","Cascadia Code",monospace}
+
+  header{
+    padding:14px 20px 12px; border-bottom:1px solid var(--rule);
+    background:linear-gradient(180deg,#0d1424,#0a0e1a);
+    display:flex; align-items:flex-end; gap:22px; flex-wrap:wrap;
+  }
+  .brand h1{
+    margin:0; font-size:15px; font-weight:650; letter-spacing:.02em;
+  }
+  .brand .sub{
+    margin-top:3px; font-size:11.5px; color:var(--muted); letter-spacing:.06em; text-transform:uppercase;
+  }
+  .stats{display:flex; gap:16px; margin-left:auto; align-items:center}
+  .stat{font-size:11px; color:var(--muted); text-align:right; line-height:1.25}
+  .stat b{display:block; font-size:16px; color:var(--ink)}
+  .stat b.mono{font-size:15px}
+
+  .controls{
+    display:flex; gap:10px 16px; align-items:center; flex-wrap:wrap;
+    padding:10px 20px; border-bottom:1px solid var(--rule); background:var(--panel2);
+    font-size:12.5px;
+  }
+  .seg{display:inline-flex; border:1px solid var(--rule); border-radius:7px; overflow:hidden}
+  .seg button{
+    background:transparent; color:var(--muted); border:0; padding:6px 12px; cursor:pointer;
+    font:inherit; letter-spacing:.01em;
+  }
+  .seg button.on{background:#16213a; color:var(--ink)}
+  .seg button+button{border-left:1px solid var(--rule)}
+  .toggle{display:inline-flex; align-items:center; gap:7px; color:var(--muted); cursor:pointer; user-select:none}
+  .toggle input{accent-color:var(--wait); width:15px; height:15px}
+  .zoom{display:inline-flex; align-items:center; gap:8px; color:var(--muted)}
+  .zoom input{width:130px; accent-color:var(--hold)}
+  .kbd-hint{color:var(--faint); font-size:10.5px; letter-spacing:.02em}
+  .kbd-hint kbd{font:inherit; border:1px solid var(--rule); border-bottom-width:2px;
+    border-radius:3px; padding:0 3px; color:var(--muted); background:rgba(255,255,255,.03)}
+  .ctl-label{color:var(--faint); font-size:11px; text-transform:uppercase; letter-spacing:.07em; margin-right:2px}
+
+  .legend{display:flex; gap:14px 18px; flex-wrap:wrap; padding:9px 20px; border-bottom:1px solid var(--rule); font-size:11.5px; color:var(--muted); background:var(--panel2)}
+  .legend .grp{display:flex; gap:14px; flex-wrap:wrap; align-items:center}
+  .legend .sep{width:1px; align-self:stretch; background:var(--rule)}
+  .key{display:inline-flex; align-items:center; gap:6px}
+  .swatch{width:22px; height:11px; border-radius:3px; display:inline-block}
+  .gl{width:15px; height:15px; display:inline-block}
+
+  .scroll{overflow:auto; flex:1; position:relative}
+  svg{display:block}
+  text{fill:var(--ink); font-family:ui-monospace,"SFMono-Regular",Menlo,monospace}
+  .laneHead{font-size:13px; font-weight:600; letter-spacing:.03em}
+  .laneHeadSub{font-size:10px; fill:var(--faint)}
+  .gridline{stroke:var(--rule-soft); stroke-width:1}
+  .axislabel{fill:var(--faint); font-size:10.5px}
+  .lifeline{stroke:var(--lifeline); stroke-width:1.5}
+  .band{opacity:.9}
+  .band.HOLDING{fill:rgba(45,212,191,.16); stroke:var(--hold)}
+  .band.HOLDING_SHARED{fill:url(#hatch); stroke:var(--shared); stroke-dasharray:3 2}
+  .band.BLOCKED{fill:rgba(245,165,36,.16); stroke:var(--block)}
+  .band.WAITING{fill:rgba(167,139,250,.18); stroke:var(--wait)}
+  .band{stroke-width:1; rx:5}
+  .lam{fill:var(--muted); font-size:10px}
+  .note-lbl{fill:var(--muted); font-size:10.5px}
+  .lam-in{fill:var(--faint)}
+  .edge{fill:none; stroke-width:1.4; opacity:.55}
+  .edge.handoff{stroke:var(--handoff); stroke-dasharray:3 3}
+  .edge.signal{stroke:var(--signal); stroke-width:1.7; opacity:.75}
+  .mk{cursor:pointer}
+  /* realce ao passar o rato */
+  svg.dim .band, svg.dim .lifeline, svg.dim .mk, svg.dim .edge, svg.dim .lam, svg.dim .note-lbl{opacity:.12}
+  svg.dim .edge{opacity:.05}
+  .hot{opacity:1 !important}
+  path.edge.hot{opacity:1 !important; stroke-width:2.4}
+  .mk.hot circle,.mk.hot rect,.mk.hot path,.mk.hot polygon{filter:drop-shadow(0 0 4px currentColor)}
+
+  #tip{
+    position:fixed; pointer-events:none; z-index:20; max-width:320px;
+    background:#0c1322; border:1px solid var(--rule); border-radius:9px;
+    padding:10px 12px; font-size:12px; line-height:1.5; color:var(--ink);
+    box-shadow:0 10px 30px rgba(0,0,0,.5); opacity:0; transition:opacity .08s;
+  }
+  #tip.pinned{pointer-events:auto; border-color:#3a4a6b; box-shadow:0 12px 34px rgba(0,0,0,.6)}
+  #tip .k{font-weight:650; letter-spacing:.01em}
+  #tip .hint{margin-top:7px; padding-top:6px; border-top:1px solid var(--rule); color:var(--faint); font-size:10.5px}
+  #diag .mk{cursor:pointer; pointer-events:auto}
+  #diag .edge, #diag .band, #diag .lifeline, #diag .axislabel,
+  #diag .laneHead, #diag .laneHeadSub, #diag .lam, #diag .note-lbl{pointer-events:none}
+  .mk.pinned circle,.mk.pinned rect,.mk.pinned path,.mk.pinned polygon{filter:drop-shadow(0 0 6px currentColor)}
+  #tip .row{color:var(--muted)}
+  #tip .row b{color:var(--ink); font-weight:600}
+  #tip .cause{margin-top:6px; padding-top:6px; border-top:1px solid var(--rule); color:var(--signal)}
+  #tip .lamx{margin-top:5px; color:var(--hold)}
+  .pill{display:inline-block; padding:1px 7px; border-radius:20px; font-size:10.5px; letter-spacing:.03em}
+</style>
+</head>
+<body>
+<header>
+  <div class="brand">
+    <h1>Diagrama espaço-temporal de uma execução concorrente</h1>
+    <div class="sub" id="scenario">Produtor / Consumidor · buffer limitado · ReentrantLock + Condition</div>
+  </div>
+  <div class="stats" id="stats"></div>
+</header>
+
+<div class="controls">
+  <span class="ctl-label">Eixo</span>
+  <span class="seg" id="axisSeg">
+    <button data-axis="t" class="on">Tempo físico</button>
+    <button data-axis="lamport">Relógio de Lamport</button>
+  </span>
+  <span class="ctl-label" style="margin-left:6px">Setas</span>
+  <label class="toggle"><input type="checkbox" id="tHandoff" checked> handoff de lock</label>
+  <label class="toggle"><input type="checkbox" id="tSignal" checked> signal → await</label>
+  <label class="toggle"><input type="checkbox" id="tLam" checked> relógios L</label>
+  <label class="toggle"><input type="checkbox" id="tNotes" checked> marcas</label>
+  <label class="seg" style="cursor:pointer;margin-left:auto">
+    <button type="button" id="openBtn">Abrir trace.json…</button>
+    <input type="file" id="file" accept=".json,application/json" hidden>
+  </label>
+  <span class="zoom"><span class="ctl-label">Zoom</span>
+    <input type="range" id="zoom" min="1" max="12" step="0.1" value="1.6">
+    <span class="kbd-hint" title="O zoom mantém fixo o ponto sob o cursor">Ctrl/⌘ + roda · pinça · <kbd>+</kbd> <kbd>−</kbd> <kbd>0</kbd></span></span>
+</div>
+
+<div class="legend">
+  <div class="grp">
+    <span class="key"><span class="swatch" style="background:rgba(245,165,36,.35);border:1px solid var(--block)"></span> bloqueada no lock</span>
+    <span class="key"><span class="swatch" style="background:rgba(45,212,191,.30);border:1px solid var(--hold)"></span> secção crítica (exclusiva)</span>
+    <span class="key"><span class="swatch" style="background:repeating-linear-gradient(45deg,rgba(94,234,212,.30),rgba(94,234,212,.30) 2px,transparent 2px,transparent 4px);border:1px dashed var(--shared)"></span> leitura (partilhada)</span>
+    <span class="key"><span class="swatch" style="background:rgba(167,139,250,.35);border:1px solid var(--wait)"></span> à espera (condição)</span>
+  </div>
+  <div class="sep"></div>
+  <div class="grp" id="glyphLegend"></div>
+</div>
+
+<div class="scroll"><svg id="diag" xmlns="http://www.w3.org/2000/svg"></svg></div>
+<div id="tip"></div>
+
+<script>
+/* ===== Trace embutido (gerado pela execução real do programa) ===== */
+const TRACE = /*__TRACE__*/{"events":[]}/*__END__*/;
+
+/* ===== Lógica de processamento (idêntica a viz/core.js, validada em node) ===== */
+const STATE = { RUNNING:"RUNNING", HOLDING:"HOLDING", HOLDING_SHARED:"HOLDING_SHARED", BLOCKED:"BLOCKED", WAITING:"WAITING", TERMINATED:"TERMINATED" };
+const bySeq = (a,b)=>a.seq-b.seq;
+function threadOrder(events){
+  const seen=[], set=new Set();
+  for(const e of events.slice().sort(bySeq)){ if(!set.has(e.thread)){set.add(e.thread);seen.push(e.thread);} }
+  return seen;
+}
+function stateSegments(events, axisKey){
+  const byThread=new Map();
+  for(const e of events){ if(!byThread.has(e.thread)) byThread.set(e.thread,[]); byThread.get(e.thread).push(e); }
+  const result=new Map();
+  for(const [thread,evs] of byThread){
+    evs.sort(bySeq);
+    const segs=[]; let state=STATE.RUNNING; let mark=evs[0][axisKey];
+    const push=(until)=>{ if(until>mark) segs.push({state,a:mark,b:until}); mark=until; };
+    for(const e of evs){
+      const at=e[axisKey];
+      switch(e.kind){
+        case "LOCK_REQUEST":  push(at); state=STATE.BLOCKED; break;
+        case "LOCK_ACQUIRED": push(at); state=(e.mode==="READ")?STATE.HOLDING_SHARED:STATE.HOLDING; break;
+        case "AWAIT_BEGIN":   push(at); state=STATE.WAITING; break;
+        case "AWAIT_WAKEUP":  push(at); state=STATE.HOLDING; break;
+        case "LOCK_RELEASED": push(at); state=STATE.RUNNING; break;
+        case "THREAD_END":    push(at); state=STATE.TERMINATED; break;
+        default: break;
+      }
+    }
+    result.set(thread,{segments:segs, first:evs[0], last:evs[evs.length-1], events:evs});
+  }
+  return result;
+}
+function axisRange(events, axisKey){
+  let lo=Infinity,hi=-Infinity;
+  for(const e of events){ lo=Math.min(lo,e[axisKey]); hi=Math.max(hi,e[axisKey]); }
+  return [lo,hi];
+}
+
+/* ===== Rótulos legíveis ===== */
+const KIND_PT = {
+  LOCK_REQUEST:"Pedido de lock", LOCK_ACQUIRED:"Lock adquirido", LOCK_RELEASED:"Lock libertado",
+  AWAIT_BEGIN:"await() — entra em espera", AWAIT_WAKEUP:"await() regressa — readquire o lock",
+  SIGNAL:"signal()", SIGNAL_ALL:"signalAll()", NOTE:"Marca aplicacional", THREAD_END:"Fim da thread"
+};
+
+/* ===== Geometria ===== */
+const G = { gutter:78, laneW:196, top:78, bottom:46, plotBase:1180, bandW:30 };
+const SVGNS="http://www.w3.org/2000/svg";
+let events = [], idx = new Map(), threads = [];
+const laneX = t => G.gutter + threads.indexOf(t)*G.laneW + G.laneW/2;
+
+function loadTrace(obj){
+  if(!obj || !Array.isArray(obj.events) || obj.events.length===0)
+    throw new Error("trace.json sem eventos");
+  events = obj.events;
+  idx = new Map(events.map(e=>[e.seq,e]));
+  threads = threadOrder(events);
+  buildStats();
+  render();
+}
+
+/* ===== Estado da UI ===== */
+let axisKey="t", zoom=1.6, showHandoff=true, showSignal=true, showLam=true, showNotes=true;
+const AX = {lo:0, span:1, plotH:1};   // mapeamento actual do eixo (para o zoom ancorado)
+
+const svg = document.getElementById("diag");
+const tip = document.getElementById("tip");
+
+function el(name, attrs, ...kids){
+  const n=document.createElementNS(SVGNS,name);
+  for(const k in attrs) if(attrs[k]!==undefined && attrs[k]!==null) n.setAttribute(k,attrs[k]);
+  for(const c of kids) if(c!=null) n.appendChild(typeof c==="string"?document.createTextNode(c):c);
+  return n;
+}
+function fmtT(v){ return axisKey==="t" ? (v/1e6).toFixed(1)+" ms" : "L"+v; }
+
+/* ===== Glifos por tipo de evento ===== */
+function glyph(kind, cx, cy, mode, withHit){
+  const g=el("g",{class:"mk"});
+  const add=n=>g.appendChild(n);
+  // Alvo de rato circular, invisivel mas SOLIDO. Em SVG uma forma com fill:"none"
+  // nao e alvo no interior (so no traco), pelo que sem isto metade dos glifos so
+  // reagiriam na borda — e o rato "cairia" na linha de vida por baixo.
+  if(withHit) add(el("circle",{cx,cy,r:9,fill:"transparent",class:"hit"}));
+  switch(kind){
+    case "LOCK_REQUEST":  add(el("circle",{cx,cy,r:4.5,fill:"none",stroke:"var(--block)","stroke-width":1.8})); g.style.color="var(--block)"; break;
+    case "LOCK_ACQUIRED":
+      if(mode==="READ"){ add(el("circle",{cx,cy,r:4.8,fill:"none",stroke:"var(--shared)","stroke-width":2})); g.style.color="var(--shared)"; }
+      else { add(el("circle",{cx,cy,r:4.8,fill:"var(--hold)"})); g.style.color="var(--hold)"; }
+      break;
+    case "LOCK_RELEASED": add(el("rect",{x:cx-4,y:cy-4,width:8,height:8,rx:1.5,fill:"var(--lifeline)",stroke:"#6b7ba6"})); g.style.color="#8ea0cc"; break;
+    case "AWAIT_BEGIN":   add(el("path",{d:`M${cx-5},${cy-4} L${cx+5},${cy-4} L${cx},${cy+5} Z`,fill:"none",stroke:"var(--wait)","stroke-width":1.8})); g.style.color="var(--wait)"; break;
+    case "AWAIT_WAKEUP":  add(el("path",{d:`M${cx-5},${cy+4} L${cx+5},${cy+4} L${cx},${cy-5} Z`,fill:"var(--wait)"})); g.style.color="var(--wait)"; break;
+    case "SIGNAL": case "SIGNAL_ALL":
+                          add(el("path",{d:`M${cx},${cy-5.5} L${cx+5.5},${cy} L${cx},${cy+5.5} L${cx-5.5},${cy} Z`,fill:"var(--signal)"})); g.style.color="var(--signal)"; break;
+    case "NOTE":          add(el("circle",{cx,cy,r:2.6,fill:"none",stroke:"var(--muted)","stroke-width":1.2})); g.style.color="var(--muted)"; break;
+    case "THREAD_END":    add(el("path",{d:`M${cx-4},${cy-4} L${cx+4},${cy+4} M${cx+4},${cy-4} L${cx-4},${cy+4}`,stroke:"var(--faint)","stroke-width":1.6})); g.style.color="var(--faint)"; break;
+  }
+  return g;
+}
+
+function render(){
+  // O SVG e reconstruido: um evento fixado deixaria de ter no correspondente.
+  // Limpar TAMBEM o esbatimento, senao o diagrama fica todo escurecido sem realce.
+  pinnedSeq=null; tip.classList.remove("pinned"); tip.style.opacity=0;
+  svg.classList.remove("dim");
+  while(svg.firstChild) svg.removeChild(svg.firstChild);
+  const [lo,hi] = axisRange(events, axisKey);
+  const span = Math.max(1,(hi-lo));
+  const plotH = G.plotBase*zoom;
+  const width = G.gutter + threads.length*G.laneW + 20;
+  const height = G.top + plotH + G.bottom;
+  svg.setAttribute("width", width);
+  svg.setAttribute("height", height);
+  svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+
+  const y = v => G.top + (v-lo)/span*plotH;
+  AX.lo = lo; AX.span = span; AX.plotH = plotH;   // para o zoom ancorado no ponteiro
+
+  // defs: setas
+  const defs=el("defs");
+  const arrow=(id,color)=>{
+    const m=el("marker",{id,markerWidth:8,markerHeight:8,refX:6.5,refY:3,orient:"auto",markerUnits:"userSpaceOnUse"});
+    m.appendChild(el("path",{d:"M0,0 L7,3 L0,6 Z",fill:color}));
+    return m;
+  };
+  defs.appendChild(arrow("ahHandoff","var(--handoff)"));
+  defs.appendChild(arrow("ahSignal","var(--signal)"));
+  // hachura para a posse PARTILHADA (leitura): sinaliza "vários ao mesmo tempo"
+  const hatch=el("pattern",{id:"hatch",width:6,height:6,patternUnits:"userSpaceOnUse",patternTransform:"rotate(45)"});
+  hatch.appendChild(el("rect",{width:6,height:6,fill:"rgba(94,234,212,.10)"}));
+  hatch.appendChild(el("line",{x1:0,y1:0,x2:0,y2:6,stroke:"rgba(94,234,212,.55)","stroke-width":2}));
+  defs.appendChild(hatch);
+  svg.appendChild(defs);
+
+  // linhas de grelha + rótulos do eixo
+  const gGrid=el("g");
+  const N=10;
+  for(let i=0;i<=N;i++){
+    const v=lo+span*i/N; const yy=y(v);
+    gGrid.appendChild(el("line",{class:"gridline",x1:G.gutter-8,y1:yy,x2:width-8,y2:yy}));
+    gGrid.appendChild(el("text",{class:"axislabel",x:G.gutter-12,y:yy+3,"text-anchor":"end"},
+      axisKey==="t" ? (v/1e6).toFixed(0) : "L"+Math.round(v)));
+  }
+  gGrid.appendChild(el("text",{class:"axislabel",x:14,y:G.top-14},
+    axisKey==="t" ? "tempo (ms) ↓" : "Lamport ↓"));
+  svg.appendChild(gGrid);
+
+  // faixas por thread: cabeçalho, lifeline, bandas de estado
+  const segMap = stateSegments(events, axisKey);
+  const gLanes=el("g");
+  for(const th of threads){
+    const cx=laneX(th);
+    const info=segMap.get(th);
+    const role = th.startsWith("P") ? "produtor" : "consumidor";
+    gLanes.appendChild(el("text",{class:"laneHead","text-anchor":"middle",x:cx,y:G.top-30},th));
+    gLanes.appendChild(el("text",{class:"laneHeadSub","text-anchor":"middle",x:cx,y:G.top-16},role));
+    // lifeline até ao último evento
+    const yEnd=y(info.last[axisKey]);
+    gLanes.appendChild(el("line",{class:"lifeline",x1:cx,y1:y(info.first[axisKey]),x2:cx,y2:yEnd}));
+    // bandas
+    for(const s of info.segments){
+      if(s.state===STATE.RUNNING||s.state===STATE.TERMINATED) continue;
+      const y0=y(s.a), y1=y(s.b);
+      gLanes.appendChild(el("rect",{class:"band "+s.state, x:cx-G.bandW/2, y:y0, width:G.bandW, height:Math.max(2,y1-y0), rx:5}));
+    }
+  }
+  svg.appendChild(gLanes);
+
+  // setas causais
+  const gEdges=el("g");
+  for(const e of events){
+    const isSignal = e.kind==="AWAIT_WAKEUP";
+    if(isSignal && !showSignal) continue;
+    if(!isSignal && !showHandoff) continue;
+    for(const cs of causesOf(e)){            // uma seta POR CAUSA
+      const src=idx.get(cs);
+      if(!src) continue;
+      const x1=laneX(src.thread), y1=y(src[axisKey]);
+      const x2=laneX(e.thread),  y2=y(e[axisKey]);
+      const k=Math.sign(x2-x1)*Math.min(64,Math.abs(x2-x1)/2+18);
+      const d=`M${x1},${y1} C${x1+k},${y1+(y2-y1)*0.12} ${x2-k},${y2-(y2-y1)*0.12} ${x2},${y2}`;
+      gEdges.appendChild(el("path",{
+        class:"edge "+(isSignal?"signal":"handoff"),
+        d, "data-to":e.seq, "data-from":src.seq,
+        "marker-end":`url(#${isSignal?"ahSignal":"ahHandoff"})`
+      }));
+    }
+  }
+  svg.appendChild(gEdges);
+
+  // marcadores + rótulos
+  const gMk=el("g");
+  for(const e of events){
+    if(e.kind==="NOTE" && !showNotes) continue;
+    const cx=laneX(e.thread), cy=y(e[axisKey]);
+    const g=glyph(e.kind, cx, cy, e.mode, true);
+    g.setAttribute("data-seq", e.seq);
+    gMk.appendChild(g);
+  }
+
+  /* Rótulos, com anti-colisão.
+     Dois eventos podem cair quase no mesmo pixel (adquirir o lock e, logo a seguir, um
+     Tracer.note): no eixo do tempo físico ficam a 1-2 px e os textos escrevem-se por cima
+     uns dos outros. Reserva-se espaço por coluna e lado, empurrando para baixo o mínimo
+     necessário.
+     PRIORIDADE: as mensagens aplicacionais são o que o aluno escreveu para ver, por isso
+     reservam espaço primeiro. Se o espaço faltar, cede a etiqueta de Lamport — cujo valor
+     continua disponível ao clicar no evento. No eixo de Lamport os eventos espalham-se pela
+     ordem causal e cabem todos. */
+  const LINHA = 13, DESVIO_MAX = 30;
+  const ocupado = new Map();            // "coluna|lado" -> intervalos [topo, fundo] ocupados
+
+  function reservar(chave, yDesejado, nLinhas){
+    const altura = LINHA*(nLinhas-1) + 12;
+    const lista = ocupado.get(chave) || [];
+    let yy = yDesejado, mexeu = true, guarda = 0;
+    while(mexeu && guarda++ < 300){
+      mexeu = false;
+      for(const [a,b] of lista){
+        if(yy - 6 < b && yy - 6 + altura > a){ yy = b + 7; mexeu = true; }
+      }
+    }
+    if(yy - yDesejado > DESVIO_MAX) return null;   // ficaria ao pé do marcador errado
+    lista.push([yy - 6, yy - 6 + altura]);
+    lista.sort((p,q) => p[0] - q[0]);
+    ocupado.set(chave, lista);
+    return yy;
+  }
+
+  const ladoDe = th => (threads.indexOf(th) === 0 ? -1 : 1);
+
+  // 1.ª passagem — mensagens aplicacionais, numa só linha: "L6 - leu 42".
+  // Juntar o relógio à mensagem (em vez de os empilhar) ocupa metade da altura, pelo que
+  // sobra mais espaço para os relógios dos restantes eventos.
+  if(showNotes){
+    for(const e of events){
+      if(e.kind !== "NOTE" || !e.detail) continue;
+      const cx = laneX(e.thread), cy = y(e[axisKey]);
+      const xDir = cx + G.bandW/2 + 8;
+      const chave = e.thread + "|D";
+
+      const y0 = reservar(chave, cy + 3, 1);
+      if(y0 == null) continue;
+
+      const t = el("text",{class:"note-lbl", x:xDir, y:y0});
+      if(showLam){
+        t.appendChild(el("tspan",{class:"lam-in"}, "L"+e.lamport));
+        t.appendChild(document.createTextNode(" - " + e.detail));
+      } else {
+        t.appendChild(document.createTextNode(e.detail));
+      }
+      gMk.appendChild(t);
+    }
+  }
+
+  // 2.ª passagem — relógios dos restantes eventos, no espaço que sobrou.
+  if(showLam){
+    for(const e of events){
+      if(e.kind === "NOTE") continue;
+      const cx = laneX(e.thread), cy = y(e[axisKey]);
+      const side = ladoDe(e.thread);
+      const chave = e.thread + (side > 0 ? "|D" : "|E");
+      const yl = reservar(chave, cy + 3, 1);
+      if(yl == null) continue;
+      gMk.appendChild(el("text",{class:"lam",
+        x: cx + (G.bandW/2 + 5)*side, y: yl,
+        "text-anchor": side > 0 ? "start" : "end"}, "L"+e.lamport));
+    }
+  }
+  svg.appendChild(gMk);
+
+  wireHover();
+}
+
+/* ===== Interacção: tooltip + realce do passado causal ===== */
+// Um evento pode ter VARIAS causas (ex.: um escritor espera que TODOS os leitores
+// saiam -> uma aresta por leitor). Aceita tambem traces antigos, com "cause" unica.
+function causesOf(e){
+  if(Array.isArray(e.causes)) return e.causes;
+  return (e.cause!=null) ? [e.cause] : [];
+}
+function ancestors(seq){
+  // O passado causal e um GRAFO, nao uma cadeia: um evento pode ter varias causas.
+  const set=new Set(); const stack=[seq];
+  while(stack.length){
+    const s0=stack.pop();
+    if(set.has(s0)) continue;
+    set.add(s0);
+    const e=idx.get(s0);
+    if(e) for(const c of causesOf(e)) if(!set.has(c)) stack.push(c);
+  }
+  return set;
+}
+// Evento actualmente FIXADO por clique (null = nenhum). Enquanto houver um fixado,
+// o hover nao manda: so um clique noutro evento, um clique fora, ou Esc.
+let pinnedSeq = null;
+
+function highlight(seq){
+  svg.classList.add("dim");
+  const chain=ancestors(seq);
+  chain.forEach(s=>{ const m=svg.querySelector(`.mk[data-seq="${s}"]`); if(m) m.classList.add("hot"); });
+  svg.querySelectorAll("path.edge").forEach(p=>{
+    const to=+p.getAttribute("data-to"), from=+p.getAttribute("data-from");
+    if(chain.has(to)&&chain.has(from)) p.classList.add("hot");
+  });
+}
+function clearHighlight(){
+  svg.classList.remove("dim");
+  svg.querySelectorAll(".hot").forEach(n=>n.classList.remove("hot"));
+  svg.querySelectorAll(".mk.pinned").forEach(n=>n.classList.remove("pinned"));
+}
+function unpin(){
+  if(pinnedSeq===null) return;
+  pinnedSeq=null;
+  clearHighlight();
+  tip.classList.remove("pinned");
+  tip.style.opacity=0;
+}
+function pin(seq, ev){
+  clearHighlight();
+  pinnedSeq=seq;
+  highlight(seq);
+  const node=svg.querySelector(`.mk[data-seq="${seq}"]`);
+  if(node) node.classList.add("pinned");
+  showTip(idx.get(seq), ev, true);
+  tip.classList.add("pinned");
+}
+
+function wireHover(){
+  svg.querySelectorAll(".mk").forEach(node=>{
+    const seq=+node.getAttribute("data-seq");
+    node.addEventListener("mouseenter", ev=>{
+      if(pinnedSeq!==null) return;          // ha um fixado: o hover nao interfere
+      highlight(seq);
+      showTip(idx.get(seq), ev);
+    });
+    node.addEventListener("mousemove", ev=>{ if(pinnedSeq===null) moveTip(ev); });
+    node.addEventListener("mouseleave", ()=>{
+      if(pinnedSeq!==null) return;
+      clearHighlight();
+      tip.style.opacity=0;
+    });
+    // Clique: fixa os detalhes (util para ler com calma, e essencial no touch,
+    // onde o mouseleave nunca chega e a caixa ficaria presa no ecra).
+    node.addEventListener("click", ev=>{
+      ev.stopPropagation();
+      if(pinnedSeq===seq) { unpin(); return; }   // clicar no mesmo: alterna
+      pin(seq, ev);
+    });
+  });
+}
+function showTip(e, ev, isPinned){
+  const cs = causesOf(e).map(c=>idx.get(c)).filter(Boolean);
+  let html = `<div class="k">${KIND_PT[e.kind]||e.kind}</div>`;
+  html += `<div class="row">thread <b>${e.thread}</b> · seq <b>${e.seq}</b></div>`;
+  if(e.lock) html += `<div class="row">lock <b>${e.lock}</b>${e.mode==="READ"?" · partilhado (leitura)":(e.mode==="WRITE"?" · exclusivo (escrita)":"")}</div>`;
+  if(e.cond) html += `<div class="row">condição <b>${e.cond}</b></div>`;
+  html += `<div class="row">tempo físico <b>${(e.t/1e6).toFixed(2)} ms</b></div>`;
+  if(e.detail) html += `<div class="row">${e.detail}</div>`;
+  html += `<div class="lamx">relógio de Lamport = <b>${e.lamport}</b></div>`;
+  if(cs.length){
+    const label = e.kind==="AWAIT_WAKEUP" ? "acordada por"
+                : (cs.length>1 ? "só entrou depois de TODOS saírem" : "após libertação de");
+    html += `<div class="cause">${label}`;
+    for(const c of cs) html += `<br><b>${c.thread}</b> · ${KIND_PT[c.kind]||c.kind} (L${c.lamport})`;
+    html += `<br>Lamport = max(local, ${cs.map(c=>c.lamport).join(", ")}) + 1 = <b>${e.lamport}</b></div>`;
+  }
+  if(isPinned) html += `<div class="hint">clique fora (ou Esc) para fechar</div>`;
+  tip.innerHTML=html; tip.style.opacity=1; moveTip(ev);
+}
+function moveTip(ev){
+  const pad=14, w=tip.offsetWidth, h=tip.offsetHeight;
+  let x=ev.clientX+pad, yy=ev.clientY+pad;
+  if(x+w>innerWidth-8) x=ev.clientX-w-pad;
+  if(yy+h>innerHeight-8) yy=ev.clientY-h-pad;
+  tip.style.left=x+"px"; tip.style.top=yy+"px";
+}
+
+/* ===== Estatísticas + legenda de glifos ===== */
+function buildStats(){
+  const c=k=>events.filter(e=>e.kind===k).length;
+  const handoffs=events.filter(e=>e.kind==="LOCK_ACQUIRED").reduce((n,e)=>n+causesOf(e).length,0);
+  const sig=events.filter(e=>e.kind==="AWAIT_WAKEUP").reduce((n,e)=>n+causesOf(e).length,0);
+  document.getElementById("stats").innerHTML =
+    `<div class="stat"><b class="mono">${threads.length}</b>threads</div>`
+   +`<div class="stat"><b class="mono">${events.length}</b>eventos</div>`
+   +`<div class="stat"><b class="mono">${handoffs}</b>handoffs de lock</div>`
+   +`<div class="stat"><b class="mono">${sig}</b>signal → await</div>`;
+}
+function buildGlyphLegend(){
+  const items=[
+    ["LOCK_REQUEST","pedido de lock"],["LOCK_ACQUIRED","adquiriu"],["LOCK_RELEASED","libertou"],
+    ["AWAIT_BEGIN","await (entra)"],["AWAIT_WAKEUP","await (regressa)"],["SIGNAL","signal"],
+    ["NOTE","marca"],["THREAD_END","fim"]
+  ];
+  const gl=document.getElementById("glyphLegend");
+  for(const [kind,lbl] of items){
+    const wrap=document.createElement("span"); wrap.className="key";
+    const s=document.createElementNS(SVGNS,"svg"); s.setAttribute("class","gl"); s.setAttribute("viewBox","0 0 15 15");
+    s.appendChild(glyph(kind,7.5,7.5,null,false));  // legenda: sem area de toque
+    wrap.appendChild(s); wrap.appendChild(document.createTextNode(lbl));
+    gl.appendChild(wrap);
+  }
+}
+
+/* ===== Ligações dos controlos ===== */
+// Clicar FORA de um marcador (fundo do diagrama, painel, qualquer lado) dispensa a caixa.
+document.addEventListener("click", ev=>{
+  if(pinnedSeq===null) return;
+  if(ev.target.closest && (ev.target.closest(".mk") || ev.target.closest("#tip"))) return;
+  unpin();
+});
+// Esc tambem fecha.
+document.addEventListener("keydown", ev=>{ if(ev.key==="Escape") unpin(); });
+
+document.getElementById("axisSeg").addEventListener("click",e=>{
+  const b=e.target.closest("button[data-axis]"); if(!b) return;
+  axisKey=b.dataset.axis;
+  document.querySelectorAll("#axisSeg button").forEach(x=>x.classList.toggle("on",x===b));
+  render();
+});
+document.getElementById("tHandoff").addEventListener("change",e=>{showHandoff=e.target.checked;render();});
+document.getElementById("tSignal").addEventListener("change",e=>{showSignal=e.target.checked;render();});
+document.getElementById("tLam").addEventListener("change",e=>{showLam=e.target.checked;render();});
+document.getElementById("tNotes").addEventListener("change",e=>{showNotes=e.target.checked;render();});
+/* ===== Zoom: roda/pinca (Ctrl ou Cmd), teclado (+ / - / 0) e slider =====
+   O zoom escala o eixo do tempo. Para nao "fugir" o que se esta a observar, o ponto
+   sob o ponteiro fica FIXO: converte-se o pixel sob o rato no valor do eixo, aplica-se
+   o novo zoom, e reposiciona-se o scroll para esse valor voltar ao mesmo sitio. */
+const wrap = document.querySelector(".scroll");
+const zoomInput = document.getElementById("zoom");
+const ZMIN = 1, ZMAX = 12, ZDEF = 1.6;
+let lastPointerY = null;   // ultima posicao do rato sobre o diagrama
+
+const valueAt = px => AX.lo + (px - G.top) / AX.plotH * AX.span;   // pixel -> valor do eixo
+const pixelOf = v  => G.top + (v - AX.lo) / AX.span * AX.plotH;    // valor do eixo -> pixel
+
+function zoomTo(z, clientY){
+  z = Math.min(ZMAX, Math.max(ZMIN, z));
+  if (Math.abs(z - zoom) < 1e-4) return;
+
+  const rect = wrap.getBoundingClientRect();
+  // Sem ponteiro (slider, ou teclado com o rato fora do diagrama): ancora no TOPO da
+  // area visivel. Ancorar ao centro faria o conteudo acima crescer e empurraria o
+  // scroll para baixo — com o diagrama no inicio, o arranque da execucao saia do ecra
+  // a cada pressao, e a deriva acumulava. Com ancora no topo, estando em scrollTop=0,
+  // ali fica.
+  const offset = (clientY == null)
+      ? 0
+      : Math.min(Math.max(clientY - rect.top, 0), wrap.clientHeight);
+
+  const scrollAntes = wrap.scrollTop;
+  const pontoAncora = scrollAntes + offset;   // pixel do conteudo sob a ancora
+  const fixado = pinnedSeq;                   // preservar os detalhes abertos
+
+  // O conteudo tem duas zonas: um CABECALHO de altura fixa (G.top, com os nomes das
+  // threads) que NAO escala, e o grafico, que escala com o zoom. Se a ancora cair no
+  // cabecalho, nao ha valor de eixo que lhe corresponda — converte-la daria um valor
+  // ficticio, anterior ao inicio do trace, e o zoom deixaria de ser reversivel.
+  // Nesse caso a resposta certa e simples: manter o scroll onde esta.
+  const noCabecalho = pontoAncora <= G.top;
+  const valorAncora = noCabecalho ? null : valueAt(pontoAncora);
+
+  zoom = z;
+  zoomInput.value = z;
+  render();
+
+  wrap.scrollTop = noCabecalho
+      ? scrollAntes                                       // cabecalho: nada a compensar
+      : Math.max(0, pixelOf(valorAncora) - offset);
+  if (fixado != null) repin(fixado);
+}
+
+/** Volta a fixar um evento apos o re-render (o marcador foi reconstruido). */
+function repin(seq){
+  const node = svg.querySelector(`.mk[data-seq="${seq}"]`);
+  if(!node) return;
+  pinnedSeq = seq;
+  highlight(seq);
+  node.classList.add("pinned");
+  const r = node.getBoundingClientRect();
+  showTip(idx.get(seq), {clientX:r.left + r.width/2, clientY:r.top + r.height/2}, true);
+  tip.classList.add("pinned");
+}
+
+zoomInput.addEventListener("input", e => zoomTo(+e.target.value, lastPointerY));
+
+wrap.addEventListener("mousemove", e => { lastPointerY = e.clientY; });
+wrap.addEventListener("mouseleave", () => { lastPointerY = null; });
+
+// Roda com Ctrl/Cmd e pinca do touchpad (que o browser entrega como wheel + ctrlKey).
+wrap.addEventListener("wheel", e => {
+  if(!(e.ctrlKey || e.metaKey)) return;      // sem modificador: scroll normal
+  e.preventDefault();
+  // Normalizar unidades: ha browsers que reportam linhas (deltaMode 1) ou paginas (2).
+  let dy = e.deltaY;
+  if(e.deltaMode === 1) dy *= 16;
+  else if(e.deltaMode === 2) dy *= wrap.clientHeight || 600;
+  // A pinca do touchpad manda incrementos pequenos e continuos; a roda classica manda
+  // saltos de ~100. Sem este limite, um entalhe da roda multiplicaria o zoom por ~2.7.
+  dy = Math.max(-60, Math.min(60, dy));
+  zoomTo(zoom * Math.exp(-dy * 0.005), e.clientY);
+}, {passive:false});
+
+// Teclado: + aproxima, - afasta, 0 repoe.
+document.addEventListener("keydown", e => {
+  const t = e.target;
+  if(t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA")) return;
+  if(e.key === "+" || e.key === "=") { e.preventDefault(); zoomTo(zoom * 1.25, lastPointerY); }
+  else if(e.key === "-" || e.key === "_") { e.preventDefault(); zoomTo(zoom / 1.25, lastPointerY); }
+  else if(e.key === "0") { e.preventDefault(); zoomTo(ZDEF, lastPointerY); }
+});
+
+const fileInput=document.getElementById("file");
+document.getElementById("openBtn").addEventListener("click",()=>fileInput.click());
+fileInput.addEventListener("change",e=>{
+  const f=e.target.files[0]; if(!f) return;
+  const r=new FileReader();
+  r.onload=()=>{
+    try{ loadTrace(JSON.parse(r.result)); document.getElementById("scenario").textContent = "Ficheiro: "+f.name; }
+    catch(err){ alert("Não consegui ler o trace: "+err.message); }
+  };
+  r.readAsText(f);
+});
+
+buildGlyphLegend();
+loadTrace(TRACE);
+</script>
+</body>
+</html>
