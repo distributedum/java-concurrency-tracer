@@ -297,12 +297,33 @@ function render(){
 
   // grid lines + axis labels
   const gGrid=el("g");
-  const N=10;
-  for(let i=0;i<=N;i++){
-    const v=lo+span*i/N; const yy=y(v);
-    gGrid.appendChild(el("line",{class:"gridline",x1:G.gutter-8,y1:yy,x2:width-8,y2:yy}));
-    gGrid.appendChild(el("text",{class:"axislabel",x:G.gutter-12,y:yy+3,"text-anchor":"end"},
-      axisKey==="t" ? (v/1e6).toFixed(0) : "L"+Math.round(v)));
+  if(axisKey==="t"){
+    // Continuous axis: N evenly-spaced fractional divisions, ms label rounded
+    // for display only (there's no discrete value a line needs to match).
+    const N=10;
+    for(let i=0;i<=N;i++){
+      const v=lo+span*i/N; const yy=y(v);
+      gGrid.appendChild(el("line",{class:"gridline",x1:G.gutter-8,y1:yy,x2:width-8,y2:yy}));
+      gGrid.appendChild(el("text",{class:"axislabel",x:G.gutter-12,y:yy+3,"text-anchor":"end"},
+        (v/1e6).toFixed(0)));
+    }
+  } else {
+    // Discrete axis: Lamport clocks are integers, and event markers sit at their
+    // EXACT integer value (y(e.lamport)). A line labeled "L6" must be drawn at
+    // the pixel for the integer 6, not at a rounded fractional division — otherwise
+    // it visibly misses the marker for the real L6 event. Pick a "nice" integer
+    // step (1/2/5 x10^k) that keeps roughly the same line density as before (~10).
+    const rawStep = span/10;
+    const mag = Math.pow(10, Math.floor(Math.log10(Math.max(rawStep,1))));
+    const niceStep = [1,2,5,10].map(m=>m*mag).find(s=>s>=rawStep) || 10*mag;
+    const step = Math.max(1, Math.round(niceStep));
+    const first = Math.ceil(lo/step)*step;
+    for(let v=first; v<=hi; v+=step){
+      const yy=y(v);
+      gGrid.appendChild(el("line",{class:"gridline",x1:G.gutter-8,y1:yy,x2:width-8,y2:yy}));
+      gGrid.appendChild(el("text",{class:"axislabel",x:G.gutter-12,y:yy+3,"text-anchor":"end"},
+        "L"+v));
+    }
   }
   gGrid.appendChild(el("text",{class:"axislabel",x:14,y:G.top-14},
     axisKey==="t" ? "time (ms) ↓" : "Lamport ↓"));
