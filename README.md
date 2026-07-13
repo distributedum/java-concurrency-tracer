@@ -18,21 +18,35 @@ the diagram. Works offline.
 
 ## What students do (workflow)
 
-1. **Use the instrumented versions** of the lock and the condition, instead of the
-   normal ones. The only change to their code is swapping `ReentrantLock` for
-   `TracedLock`:
+1. **Use the standard lock API, unchanged.** Recommended path: students keep
+   writing `java.util.concurrent.locks.ReentrantLock`/`Condition` exactly as
+   usual — **no code changes** — and a **Java agent** injects the
+   instrumentation at class-loading time. Just add a command-line flag:
 
-   ```java
-   import pt.sd.trace.*;
-
-   TracedLock lock     = new TracedLock("bufferLock");   // instead of new ReentrantLock()
-   TracedCondition full = lock.newCondition("full");      // condition with a readable name
-   TracedCondition empty = lock.newCondition("empty");
+   ```bash
+   javac -g -d out demo/BoundedBufferRaw.java          # -g helps with naming (see below)
+   java -javaagent:sdtrace-agent.jar -cp out BoundedBufferRaw
+   # generates the same trace.json; open viz/spacetime.html as usual
    ```
 
-   `TracedLock` implements `java.util.concurrent.locks.Lock` and `TracedCondition`
-   implements `Condition`, so the rest of the code stays **exactly the same**
-   (`lock.lock()`, `cond.await()`, `cond.signal()`, `lock.unlock()`, ...).
+   Or with the shortcut: `./build-agent.sh demo/BoundedBufferRaw.java BoundedBufferRaw`.
+
+   > **Fallback for JDK 21–23:** the agent requires JDK 24+. If you're stuck on
+   > an older JDK, swap `ReentrantLock` for `TracedLock` instead — the only
+   > change to your code:
+   >
+   > ```java
+   > import pt.sd.trace.*;
+   >
+   > TracedLock lock     = new TracedLock("bufferLock");   // instead of new ReentrantLock()
+   > TracedCondition full = lock.newCondition("full");      // condition with a readable name
+   > TracedCondition empty = lock.newCondition("empty");
+   > ```
+   >
+   > `TracedLock` implements `java.util.concurrent.locks.Lock` and
+   > `TracedCondition` implements `Condition`, so the rest of the code stays
+   > **exactly the same** (`lock.lock()`, `cond.await()`, `cond.signal()`,
+   > `lock.unlock()`, ...). See the *"Wrappers path"* details below.
 
 2. **(Optional)** mark application-level events wherever they want:
 
@@ -50,20 +64,15 @@ the diagram. Works offline.
 
 ---
 
-## Transparent instrumentation (agent — no swapping `ReentrantLock`)
+## Wrappers path (fallback for JDK 21–23)
 
-There's a second path where students **don't change anything** in their code: they
-use `java.util.concurrent.locks.ReentrantLock`/`Condition` as usual, and a
-**Java agent** injects the instrumentation at load time. Just add a
-command-line flag:
+The agent above needs JDK 24+. On an older JDK, use the wrappers instead: swap
+`ReentrantLock` for `TracedLock` (see the code snippet above) — everything else
+about the workflow stays the same.
 
-```bash
-javac -g -d out demo/BoundedBufferRaw.java          # -g helps with naming (see below)
-java -javaagent:sdtrace-agent.jar -cp out BoundedBufferRaw
-# generates the same trace.json; open viz/spacetime.html as usual
-```
+---
 
-Or with the shortcut: `./build-agent.sh demo/BoundedBufferRaw.java BoundedBufferRaw`.
+## How the agent works
 
 The agent rewrites the *bytecode* of student classes to:
 
@@ -104,11 +113,13 @@ In the typical monitor pattern used in the course, the lock and conditions are
 
 ### Which of the two paths to use
 
-- **Wrappers (`TracedLock`)** — works on any JDK, gives explicit names, and is
-  fully transparent when reading the code. Good to start with.
-- **Agent** — doesn't require touching students' code (useful for instrumenting
-  already-submitted assignments), but requires JDK 24+ and some naming
-  discipline (fields, or `-g`). Good as a demonstration of *load-time weaving*.
+- **Agent (recommended)** — doesn't require touching students' code at all
+  (useful for instrumenting already-submitted assignments too), but requires
+  JDK 24+ and some naming discipline (fields, or `-g`). Default to this one.
+- **Wrappers (`TracedLock`)** — works on any JDK back to 21, gives explicit
+  names, and is fully transparent when reading the code. Use as the fallback
+  when stuck on JDK 21–23, or as a demonstration of what the agent does
+  implicitly.
 
 As a teaching note, the agent path illustrates well that **debug symbols** are a
 compilation choice and that *bytecode* doesn't carry local variable names by
@@ -159,6 +170,9 @@ blocked). So the two views are recorded as **views of the same lock**: they
 share the **name** and are distinguished by their **mode** (`READ` = shared,
 `WRITE` = exclusive).
 
+**Agent path:** nothing to do — `new ReentrantReadWriteLock()` is instrumented
+as is, and the name comes from the field (e.g. `rw`).
+
 **Wrappers path:**
 
 ```java
@@ -166,9 +180,6 @@ TracedReadWriteLock rw = new TracedReadWriteLock("data");
 rw.readLock().lock();      // shared ownership
 rw.writeLock().lock();     // exclusive ownership
 ```
-
-**Agent path:** nothing to do — `new ReentrantReadWriteLock()` is instrumented
-as is, and the name comes from the field (e.g. `rw`).
 
 The `ReadersWritersDemo` / `ReadersWritersRaw` example (the same scenario on
 both paths) puts 3 readers and 2 writers on the same lock. In the diagram you
@@ -246,6 +257,14 @@ Two families of edges are inferred automatically:
 
 ## Compiling and running the example
 
+Recommended (agent path, JDK 24+): see *"What students do"* above, or simply:
+
+```bash
+./build-agent.sh demo/BoundedBufferRaw.java BoundedBufferRaw
+```
+
+Fallback (wrappers path, JDK 21+):
+
 ```bash
 # from the project root
 mkdir -p out
@@ -258,13 +277,6 @@ Or use the shortcut:
 
 ```bash
 ./build.sh demo/BoundedBufferDemo.java BoundedBufferDemo
-```
-
-For the **transparent path** (agent, JDK 24+), see the *"Transparent
-instrumentation"* section above, or simply:
-
-```bash
-./build-agent.sh demo/BoundedBufferRaw.java BoundedBufferRaw
 ```
 
 ---

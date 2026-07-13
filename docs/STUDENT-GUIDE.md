@@ -8,15 +8,15 @@ between *threads*, and causality relations (*happens-before*), annotated with
 
 There are two instrumentation paths. **One** must be chosen.
 
-| | **Path A — Wrappers** | **Path B — Agent** |
+| | **Path A — Agent (recommended)** | **Path B — Wrappers (fallback)** |
 |---|---|---|
-| Code changes | replace `ReentrantLock` with `TracedLock` | **none** |
-| Minimum JDK version | **21** | **24** |
-| Lock names | defined explicitly | inferred automatically |
-| Mechanism | library | `-javaagent` option |
+| Code changes | **none** | replace `ReentrantLock` with `TracedLock` |
+| Minimum JDK version | **24** | **21** |
+| Lock names | inferred automatically | defined explicitly |
+| Mechanism | `-javaagent` option | library |
 
-On JDK 21, use Path A. On JDK 24 or higher, either path is valid; Path B has the
-advantage of not requiring any code changes.
+**Default to Path A (agent)** — it requires no code changes at all. Only fall back
+to **Path B (wrappers)** if you're stuck on **JDK 21–23** (the agent needs 24+).
 
 ---
 
@@ -24,7 +24,7 @@ advantage of not requiring any code changes.
 
 ```
 sdtrace-agent.jar      Single file to add to the project.
-                       Serves simultaneously as a library (Path A) and an agent (Path B).
+                       Serves simultaneously as an agent (Path A) and a library (Path B).
 viz/spacetime.html     Visualizer. Opens in the browser and works offline.
 src/pt/sd/trace/       Tool source code.
 demo/                  Four complete examples (two per path).
@@ -38,9 +38,85 @@ java -version
 
 ---
 
-## 2. Path A — Wrappers (JDK 21 or higher)
+## 2. Path A — Agent (recommended, JDK 24 or higher)
+
+The code is written with the standard Java API. Instrumentation is injected by the
+agent at class-loading time — **no code changes needed**.
+
+```java
+import java.util.concurrent.locks.*;
+
+public class Buffer {
+    private final Lock lock = new ReentrantLock();
+    private final Condition notEmpty = lock.newCondition();
+    private final Condition notFull = lock.newCondition();
+    // rest of the code unchanged
+}
+```
 
 ### 2.1. IntelliJ setup
+
+**Step 1 — set the project SDK.**
+*File → Project Structure → Project → SDK*: select a JDK **24 or higher**.
+If none is available, use *Add SDK → Download JDK…*
+
+**Step 2 — add the library.**
+Right-click `sdtrace-agent.jar` → **Add as Library…** (needed to use
+`Tracer.note(...)` and to reference the agent).
+
+**Step 3 — activate the agent.**
+
+1. *Run → Edit Configurations…*
+2. Select the configuration containing the `main` method.
+3. **Modify options → Add VM options**.
+4. In the **VM options** field, enter:
+
+```
+-javaagent:lib/sdtrace-agent.jar=include=pt.ua.sd.assignment1
+```
+
+The value of `include=` should match the package of your assignment's classes
+(see section 4).
+
+If the path contains spaces, wrap the option in quotes:
+
+```
+"-javaagent:C:\My Projects\lib\sdtrace-agent.jar=include=pt.ua.sd.assignment1"
+```
+
+**Step 4 — run.** The console should show:
+
+```
+[sdtrace] agent active | include=pt/ua/sd/assignment1
+```
+
+The absence of this line means the agent wasn't loaded; in that case, review
+Step 3.
+
+### 2.2. Command line
+
+```bash
+javac -g -cp sdtrace-agent.jar -d out src/*.java
+java -javaagent:sdtrace-agent.jar=include=pt.ua.sd.assignment1 -cp sdtrace-agent.jar:out Main
+```
+
+On Windows:
+
+```
+java -javaagent:sdtrace-agent.jar=include=pt.ua.sd.assignment1 -cp "sdtrace-agent.jar;out" Main
+```
+
+The `-g` option only matters when *locks* are held in **local variables** (see
+section 6). IntelliJ compiles with `-g` by default.
+
+---
+
+## 3. Path B — Wrappers (fallback, JDK 21 or higher)
+
+Use this path only if you're stuck on **JDK 21–23** (the agent path above needs
+JDK 24+).
+
+### 3.1. IntelliJ setup
 
 **Add the library.** Copy `sdtrace-agent.jar` into the project (e.g. into a `lib/`
 folder). Then right-click the file → **Add as Library…**
@@ -48,7 +124,7 @@ folder). Then right-click the file → **Add as Library…**
 Alternatively: *File → Project Structure → Libraries → **+** → Java*, and select
 the JAR.
 
-### 2.2. Code changes
+### 3.2. Code changes
 
 Only the creation of the *lock* and conditions changes:
 
@@ -88,12 +164,12 @@ rw.readLock().lock();      // SHARED ownership (several readers at once)
 rw.writeLock().lock();     // EXCLUSIVE ownership
 ```
 
-### 2.3. Running
+### 3.3. Running
 
 In IntelliJ, run normally (▶). No additional configuration is needed. At the end
 of the run, the `trace.json` file is generated in the working directory.
 
-### 2.4. Command line
+### 3.4. Command line
 
 ```bash
 javac -cp sdtrace-agent.jar -d out src/Buffer.java src/Main.java
@@ -102,79 +178,6 @@ java  -cp "sdtrace-agent.jar;out" Main        # Windows
 ```
 
 On Windows, the *classpath* separator is `;`, not `:`.
-
----
-
-## 3. Path B — Agent (JDK 24 or higher)
-
-The code is written with the standard Java API. Instrumentation is injected by the
-agent at class-loading time.
-
-```java
-import java.util.concurrent.locks.*;
-
-public class Buffer {
-    private final Lock lock = new ReentrantLock();
-    private final Condition notEmpty = lock.newCondition();
-    private final Condition notFull = lock.newCondition();
-    // rest of the code unchanged
-}
-```
-
-### 3.1. IntelliJ setup
-
-**Step 1 — set the project SDK.**
-*File → Project Structure → Project → SDK*: select a JDK **24 or higher**.
-If none is available, use *Add SDK → Download JDK…*
-
-**Step 2 — add the library.**
-Right-click `sdtrace-agent.jar` → **Add as Library…** (needed to use
-`Tracer.note(...)` and to reference the agent).
-
-**Step 3 — activate the agent.**
-
-1. *Run → Edit Configurations…*
-2. Select the configuration containing the `main` method.
-3. **Modify options → Add VM options**.
-4. In the **VM options** field, enter:
-
-```
--javaagent:lib/sdtrace-agent.jar=include=pt.ua.sd.assignment1
-```
-
-The value of `include=` should match the package of your assignment's classes
-(see section 4).
-
-If the path contains spaces, wrap the option in quotes:
-
-```
-"-javaagent:C:\My Projects\lib\sdtrace-agent.jar=include=pt.ua.sd.assignment1"
-```
-
-**Step 4 — run.** The console should show:
-
-```
-[sdtrace] agent active | include=pt/ua/sd/assignment1
-```
-
-The absence of this line means the agent wasn't loaded; in that case, review
-Step 3.
-
-### 3.2. Command line
-
-```bash
-javac -g -cp sdtrace-agent.jar -d out src/*.java
-java -javaagent:sdtrace-agent.jar=include=pt.ua.sd.assignment1 -cp sdtrace-agent.jar:out Main
-```
-
-On Windows:
-
-```
-java -javaagent:sdtrace-agent.jar=include=pt.ua.sd.assignment1 -cp "sdtrace-agent.jar;out" Main
-```
-
-The `-g` option only matters when *locks* are held in **local variables** (see
-section 6). IntelliJ compiles with `-g` by default.
 
 ---
 
@@ -278,9 +281,9 @@ Reading the diagram:
 
 ---
 
-## 6. Inference of *lock* names (Path B)
+## 6. Inference of *lock* names (Path A)
 
-In Path A, names are defined explicitly. In Path B, the agent infers them in the
+In Path B, names are defined explicitly. In Path A, the agent infers them in the
 following order of precedence:
 
 1. **Field** — `private final Lock lock = new ReentrantLock();` produces the
@@ -302,7 +305,7 @@ represented.
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
-| `UnsupportedClassVersionError` when starting with `-javaagent` | JDK earlier than version 24 | Use Path A or install a JDK 24+ |
+| `UnsupportedClassVersionError` when starting with `-javaagent` | JDK earlier than version 24 | Use Path B or install a JDK 24+ |
 | The `[sdtrace] agent active` message isn't shown | The `-javaagent` option wasn't passed to the JVM | IntelliJ: *Modify options → Add VM options* (don't confuse with *Program arguments*) |
 | Diagram with no lock events | The `include=` value doesn't match your classes' package | Run with `;verbose` (in quotes) and check the instrumented classes |
 | Locks not belonging to your assignment are recorded | Classpath libraries use *locks* | Set `include=` to your assignment's package |
@@ -321,7 +324,7 @@ Not instrumented:
   classes from `java.util.concurrent.locks`. Assignments that need diagram
   representation should use explicit *locks*.
 - `tryLock()` and the timed *await* variants (`awaitNanos`, `await(t, u)`):
-  they're recorded in Path A, but not in Path B.
+  they're recorded in Path B, but not in Path A.
 
 Recording events introduces additional synchronization and a slight observation
 effect. The physical time axis is suitable for analyzing blocking, but not for
