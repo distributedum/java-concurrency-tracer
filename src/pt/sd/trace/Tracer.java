@@ -22,12 +22,16 @@ import java.util.Map;
  *   - an optional causal edge (happens-before) between threads, used to draw
  *     the diagram's arrows and to merge the Lamport clock.
  *
- * Two families of causal edges are inferred:
+ * Three families of causal edges are inferred:
  *   1. Lock HANDOFF: when a thread acquires a lock, it links to the most
  *      recent release event (RELEASE or AWAIT_BEGIN) of that lock, if it was
  *      done by another thread.
  *   2. SIGNAL -> WAKEUP: a signal()/signalAll() on a condition links to the
  *      return of the await() of the waiting thread(s) (FIFO pairing).
+ *   3. Thread lifecycle: START -> BEGIN (a thread's first event links back to
+ *      its creator's start() call) and END -> JOIN (a join() that returns
+ *      links to the joined thread's last event). Unlike (2), these are exact
+ *      happens-before edges, not an approximation.
  *
  * TEACHING NOTE: the signal->await pairing is an approximation (FIFO, and it
  * doesn't model spurious wakeups), but it matches the mental model students
@@ -95,6 +99,13 @@ public final class Tracer {
     private final Map<String, Deque<Event>> waitersByCond = new HashMap<>();
     // Pending signal that will wake up a thread: tid -> SIGNAL/SIGNAL_ALL event.
     private final Map<Long, Event> pendingWakeup = new HashMap<>();
+    // Pending start() call, keyed by the CHILD's tid (known before start(), since
+    // Thread.threadId() is assigned at construction). Consumed by the child's
+    // first event (THREAD_BEGIN), which links back to it.
+    private final Map<Long, Event> pendingStartByTid = new HashMap<>();
+    // Last event recorded by each thread, so a join() that returns can link to
+    // the joined thread's final event. One entry per thread, not per event.
+    private final Map<Long, Event> lastEventByTid = new HashMap<>();
 
     private Tracer() {
         // Automatically dumps to trace.json at the end, for convenience.
@@ -120,13 +131,30 @@ public final class Tracer {
     void signal(String cond)     { emit("SIGNAL",     null, cond, null, null); }
     void signalAll(String cond)  { emit("SIGNAL_ALL", null, cond, null, null); }
 
+    // Thread lifecycle: injected by the agent around start()/join() and run().
+    // The "targetTid" slot doubles as: the CHILD being started (THREAD_START),
+    // or the thread being joined (JOIN_BEGIN / THREAD_JOIN).
+    void threadStart(long childTid, String childName) { emit("THREAD_START", null, null, childName, null, childTid); }
+    void threadBegin()                                { emit("THREAD_BEGIN", null, null, null, null, -1L); }
+    void joinBegin(long targetTid)                    { emit("JOIN_BEGIN",   null, null, null, null, targetTid); }
+    void threadJoin(long targetTid)                   { emit("THREAD_JOIN",  null, null, null, null, targetTid); }
+
     // ---- Public API for students ---------------------------------------------
 
     /** Marks an arbitrary application-level event (e.g. "produced 7"). */
     public static void note(String detail) { INSTANCE.emit("NOTE", null, null, detail, null); }
 
-    /** Marks the end of a thread (optional; improves the diagram). */
-    public static void threadDone() { INSTANCE.emit("THREAD_END", null, null, null, null); }
+    /** Marks the end of a thread (optional; improves the diagram). Idempotent:
+     *  a no-op if this thread's last recorded event is already THREAD_END (the
+     *  agent path already emits this automatically at run() return). */
+    public static void threadDone() {
+        synchronized (INSTANCE) {
+            long tid = Thread.currentThread().threadId();
+            Event last = INSTANCE.lastEventByTid.get(tid);
+            if (last != null && "THREAD_END".equals(last.kind)) return;
+        }
+        INSTANCE.emit("THREAD_END", null, null, null, null);
+    }
 
     /** Clears the state (useful for running several scenarios in the same process). */
     public static synchronized void reset() {
@@ -138,12 +166,18 @@ public final class Tracer {
         INSTANCE.lastCohortByLock.clear();
         INSTANCE.waitersByCond.clear();
         INSTANCE.pendingWakeup.clear();
+        INSTANCE.pendingStartByTid.clear();
+        INSTANCE.lastEventByTid.clear();
         INSTANCE.nextSeq = 0L;
     }
 
     // ---- Core -----------------------------------------------------------------
 
-    private synchronized Event emit(String kind, String lock, String cond, String detail, String mode) {
+    private Event emit(String kind, String lock, String cond, String detail, String mode) {
+        return emit(kind, lock, cond, detail, mode, -1L);
+    }
+
+    private synchronized Event emit(String kind, String lock, String cond, String detail, String mode, long targetTid) {
         Thread th = Thread.currentThread();
         long tid = th.threadId();
         String tname = th.getName();
@@ -173,6 +207,15 @@ public final class Tracer {
         } else if ("AWAIT_WAKEUP".equals(kind)) {
             Event sig = pendingWakeup.remove(tid);
             if (sig != null) causes.add(sig);
+        } else if ("THREAD_BEGIN".equals(kind)) {
+            // Exact edge: this thread's first breath happens-after its creator's
+            // start() call. Not an approximation, unlike signal->await.
+            Event start = pendingStartByTid.remove(tid);
+            if (start != null) causes.add(start);
+        } else if ("THREAD_JOIN".equals(kind)) {
+            // Exact edge: join() only returns after the target thread is done.
+            Event last = lastEventByTid.get(targetTid);
+            if (last != null && last.tid != tid) causes.add(last);
         }
 
         // Lamport clock: max over ALL causes.
@@ -215,6 +258,7 @@ public final class Tracer {
                     pendingReleasesByLock.put(lock, new ArrayList<>());
                 }
             }
+            case "THREAD_START" -> pendingStartByTid.put(targetTid, e);
         }
         if ("AWAIT_BEGIN".equals(kind)) {
             waitersByCond.computeIfAbsent(cond, k -> new ArrayDeque<>()).addLast(e);
@@ -233,6 +277,7 @@ public final class Tracer {
         }
 
         events.add(e);
+        lastEventByTid.put(tid, e);
         return e;
     }
 

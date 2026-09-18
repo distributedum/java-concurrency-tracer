@@ -102,4 +102,31 @@ public final class Hooks {
 
     public static void onSignal(Object c)    { Tracer.get().signal(nameOf(c)); }
     public static void onSignalAll(Object c) { Tracer.get().signalAll(nameOf(c)); }
+
+    // ---- Thread lifecycle (start/join/run) -------------------------------------
+    //
+    // The weaver matches start()V/join()V by NAME ALONE (it has no class
+    // hierarchy info at transform time — a student's `class Worker extends
+    // Thread` compiles `w.start()` to invokevirtual Worker.start, not
+    // Thread.start). Every entry point below re-checks `instanceof Thread` and
+    // no-ops otherwise, so an unrelated method that happens to be called
+    // start()/join() on some other type costs one no-op call and nothing else.
+
+    public static void onThreadStart(Object t) {
+        if (t instanceof Thread th) Tracer.get().threadStart(th.threadId(), th.getName());
+    }
+
+    public static void onJoinBegin(Object t) {
+        if (t instanceof Thread th) Tracer.get().joinBegin(th.threadId());
+    }
+
+    public static void onJoinEnd(Object t) {
+        if (t instanceof Thread th) Tracer.get().threadJoin(th.threadId());
+    }
+
+    /** Injected at the entry of a woven run(). */
+    public static void onRunBegin() { Tracer.get().threadBegin(); }
+
+    /** Injected before every normal return of a woven run(). */
+    public static void onRunEnd() { Tracer.threadDone(); }
 }

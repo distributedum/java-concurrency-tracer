@@ -239,6 +239,12 @@ Two families of edges are inferred automatically:
 2. **`signal` → `await`** — each `signal()` wakes the first one waiting (FIFO
    queue per condition); `signalAll()` wakes all of them. It links to the
    return of the corresponding `await()`.
+3. **Thread lifecycle** — `start()` → the child's first breath, and the
+   child's end → the `join()` that returns. Unlike (2), these are **exact**
+   happens-before edges: a thread's first instruction genuinely cannot precede
+   its creator's `start()` call, and `join()` genuinely cannot return before
+   the joined thread is done — there's no approximation or JVM-scheduling
+   assumption involved, unlike the FIFO signal/await pairing above.
 
 ### Honest limitations (worth discussing with students)
 
@@ -252,6 +258,16 @@ Two families of edges are inferred automatically:
   physical time axis is therefore approximate (great for seeing blocking, not
   for micro-*benchmarks*).
 - Reentrancy on the same lock shows up as a new request/acquire pair.
+- Thread lifecycle tracing (agent path only) covers `start()`/`join()` with no
+  arguments — the timed `join(long)` isn't instrumented. A thread's `run()`
+  gets a `THREAD_END` automatically only if it returns normally; a thread that
+  dies from an uncaught exception leaves its lane open-ended. `start()`/`join()`
+  call sites are matched **by method name**, not by static type (a subclass of
+  `Thread` compiles `w.start()` without `java.lang.Thread` as the owner), so an
+  unrelated method that happens to be named `start()`/`join()`/`run()` on some
+  other type gets one harmless, no-op `Hooks` call — it's filtered out at
+  runtime by an `instanceof Thread`/`Runnable` check, never shown in the
+  diagram.
 
 ---
 

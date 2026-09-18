@@ -78,6 +78,12 @@ both files** (recompiled jar, new embedded trace). To discard those local change
     2. **signal → await**: FIFO pairing per condition variable (`waitersByCond`
        deque, `pendingWakeup` map). This is an approximation — Java doesn't guarantee
        wakeup order or rule out spurious wakeups — documented as such.
+    3. **Thread lifecycle**: `start()` → the started thread's first event
+       (`pendingStartByTid`, keyed by the *child's* tid — known before `start()`
+       since `Thread.threadId()` is assigned at construction) and the joined
+       thread's last event → `join()`'s return (`lastEventByTid`, one entry per
+       thread, updated on every `emit`). Unlike (2), both are **exact**
+       happens-before edges, not an approximation.
   - Writes JSON manually (no external libs) via `toJson()`/`str()`.
 - **`TracedLock.java`** / **`TracedCondition.java`** / **`TracedReadWriteLock.java`** —
   thin wrappers implementing the standard `java.util.concurrent.locks` interfaces,
@@ -87,7 +93,13 @@ both files** (recompiled jar, new embedded trace). To discard those local change
   (`READ`/`WRITE`) — this is what lets the tracer correctly model reader/writer
   exclusion (see cohort logic above).
 - **`Hooks.java`** — static entry points called by agent-woven bytecode (mirrors the
-  wrapper API but for code that wasn't touched by hand).
+  wrapper API but for code that wasn't touched by hand). Thread-lifecycle entry
+  points (`onThreadStart`, `onJoinBegin`, `onJoinEnd`) each guard on
+  `instanceof Thread` and no-op otherwise, since `LockWeaver` matches
+  `start()`/`join()` call sites by method name alone (see below) — this guard is
+  what makes that safe. `onRunBegin`/`onRunEnd` have no receiver to guard on;
+  safety there comes from `LockWeaver` only weaving `run()` on classes that are
+  themselves shaped like a `Thread`/`Runnable` (see below).
 
 ### Agent (`src/pt/sd/trace/agent/`)
 
@@ -95,13 +107,23 @@ both files** (recompiled jar, new embedded trace). To discard those local change
   `java/`, `jdk/`, `sun/`, `javax/`, and its own `pt/sd/trace/` package. Supports
   `include=`/`exclude=`/`verbose` options (package-prefix filters, comma-separated,
   dots or slashes). Cheaply pre-filters classes by scanning the constant pool for
-  `java/util/concurrent/locks/` before attempting to weave.
+  `java/util/concurrent/locks/`, `java/lang/Thread`, `java/lang/Runnable`, or the
+  `start`/`join` UTF-8 entries before attempting to weave — a false positive here
+  just costs one weave attempt that changes nothing.
 - **`LockWeaver.java`** — the actual bytecode rewriting using the JDK 24+
   `java.lang.classfile` API. Infers human-readable lock/condition names from field
   names (always reliable) or local variable names (only if compiled with `-g`);
   falls back to `Type@Class:line` otherwise. Wraps `lock()`, `unlock()`, `await()`,
   `signal()`, `signalAll()` calls on `java.util.concurrent.locks.*`. Deliberately
   does **not** cover `tryLock`, timed `await`, or `synchronized`/`wait`/`notify`.
+  Also wraps no-arg `start()`/`join()` — matched **by method name alone** (no
+  class-hierarchy info at transform time: `class Worker extends Thread` compiles
+  `w.start()` to `invokevirtual Worker.start`, not `Thread.start`), with `Hooks`
+  re-checking `instanceof Thread` at runtime to reject false matches. Separately,
+  `run()` on a class that directly extends `Thread` or implements `Runnable` gets
+  entry/exit calls woven in (`onRunBegin`/`onRunEnd`) — this is what makes
+  `THREAD_END` automatic and no longer requires a manual `Tracer.threadDone()`
+  call, for classes shaped that way.
 
 Because `sdtrace-agent.jar`'s runtime classes are compiled with `--release 21` and
 its agent classes with `--release 24`, the single jar works both as a library
@@ -111,8 +133,10 @@ its agent classes with `--release 24`, the single jar works both as a library
 
 - **`core.js`** — pure trace-processing logic, no DOM dependency, `module.exports`ed
   for reuse/testing under Node. Computes per-thread state segments (`RUNNING`,
-  `HOLDING`, `HOLDING_SHARED`, `BLOCKED`, `WAITING`, `TERMINATED`) from the event
-  stream, keyed on either the physical (`t`) or Lamport (`lamport`) axis.
+  `HOLDING`, `HOLDING_SHARED`, `BLOCKED`, `WAITING`, `JOINING`, `TERMINATED`) from
+  the event stream, keyed on either the physical (`t`) or Lamport (`lamport`) axis.
+  **Duplicated** (by design, so the viewer has no build step) as an inline copy in
+  `template.html` — the two must be kept in sync by hand.
 - **`template.html`** — the viewer shell with a `/*__TRACE__*/ ... /*__END__*/`
   marker where build scripts inject a trace.
 - **`spacetime.html`** — `template.html` with a trace already embedded, committed so
@@ -123,7 +147,13 @@ its agent classes with `--release 24`, the single jar works both as a library
 
 `LOCK_REQUEST`, `LOCK_ACQUIRED`, `LOCK_RELEASED`, `AWAIT_BEGIN`, `AWAIT_WAKEUP`,
 `SIGNAL`, `SIGNAL_ALL`, `NOTE` (student-triggered via `Tracer.note(...)`),
-`THREAD_END`. Mode field is `EXCLUSIVE` | `READ` | `WRITE` | `null`.
+`THREAD_START` (parent, at `start()`), `THREAD_BEGIN` (child, at `run()` entry —
+exact cause: the matching `THREAD_START`), `JOIN_BEGIN` (parent, at `join()`),
+`THREAD_JOIN` (parent, at `join()` return — exact cause: the joined thread's last
+event), `THREAD_END` (now emitted automatically at `run()` return for a woven
+class; `Tracer.threadDone()` stays available and is idempotent against a
+duplicate automatic emission). Mode field is `EXCLUSIVE` | `READ` | `WRITE` |
+`null`.
 
 ## Key invariants to preserve when touching tracer logic
 

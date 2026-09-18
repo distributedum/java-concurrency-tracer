@@ -8,6 +8,7 @@ const STATE = {
   HOLDING_SHARED: "HOLDING_SHARED", // SHARED ownership (read lock of an RW lock): several at once
   BLOCKED: "BLOCKED",     // waiting to acquire the lock
   WAITING: "WAITING",     // waiting on a condition variable
+  JOINING: "JOINING",     // blocked inside join(), waiting for another thread to finish
   TERMINATED: "TERMINATED"
 };
 
@@ -51,8 +52,11 @@ function stateSegments(events, axisKey) {
         case "AWAIT_BEGIN":   push(at); state = STATE.WAITING; break;
         case "AWAIT_WAKEUP":  push(at); state = STATE.HOLDING; break;
         case "LOCK_RELEASED": push(at); state = STATE.RUNNING; break;
+        case "JOIN_BEGIN":    push(at); state = STATE.JOINING; break;
+        case "THREAD_JOIN":   push(at); state = STATE.RUNNING; break;
+        case "THREAD_BEGIN":  push(at); state = STATE.RUNNING; break;
         case "THREAD_END":    push(at); state = STATE.TERMINATED; break;
-        default: /* NOTE, SIGNAL, SIGNAL_ALL: doesn't change the state */ break;
+        default: /* NOTE, SIGNAL, SIGNAL_ALL, THREAD_START: doesn't change the state */ break;
       }
     }
     result.set(thread, { segments: segs, last: evs[evs.length - 1] });

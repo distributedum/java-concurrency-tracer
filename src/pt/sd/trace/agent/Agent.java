@@ -54,8 +54,10 @@ public final class Agent {
                 if (excludes != null) {
                     for (String p : excludes) if (name.startsWith(p)) return null;
                 }
-                // Cheap pre-filter: only rewrites classes that reference locks.
-                if (!referencesLocks(buffer)) return null;
+                // Cheap pre-filter: only rewrites classes that reference locks or
+                // threads (a class that only starts/joins workers — no lock at
+                // all — must still pass through for start()/join()/run() weaving).
+                if (!referencesLocksOrThreads(buffer)) return null;
                 try {
                     byte[] out = LockWeaver.weave(name, buffer);
                     if (verbose) System.err.println("[sdtrace] instrumented: " + name.replace('/', '.'));
@@ -96,10 +98,20 @@ public final class Agent {
         return parts;
     }
 
-    /** Looks for the locks package's UTF-8 string in the constant pool (simple scan). */
-    private static boolean referencesLocks(byte[] classBytes) {
+    /**
+     * Looks for the locks package, or {@code Thread}/{@code Runnable}, or the
+     * {@code start}/{@code join} method names, as UTF-8 strings in the constant
+     * pool (simple scan). A false positive here just costs one weave attempt
+     * that changes nothing — {@link LockWeaver} and {@link Hooks} do the real,
+     * precise checks.
+     */
+    private static boolean referencesLocksOrThreads(byte[] classBytes) {
         String s = new String(classBytes, StandardCharsets.ISO_8859_1);
-        return s.contains("java/util/concurrent/locks/");
+        return s.contains("java/util/concurrent/locks/")
+            || s.contains("java/lang/Thread")
+            || s.contains("java/lang/Runnable")
+            || s.contains("start")
+            || s.contains("join");
     }
 
 }

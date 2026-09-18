@@ -8,6 +8,7 @@ import java.lang.classfile.MethodModel;
 import java.lang.classfile.instruction.FieldInstruction;
 import java.lang.classfile.instruction.InvokeInstruction;
 import java.lang.classfile.instruction.LineNumber;
+import java.lang.classfile.instruction.ReturnInstruction;
 import java.lang.classfile.instruction.StoreInstruction;
 import java.lang.constant.ClassDesc;
 import java.lang.constant.MethodTypeDesc;
@@ -25,20 +26,27 @@ import java.util.Map;
  * Uses the standard Class-File API ({@code java.lang.classfile}, final in
  * JDK 24), so there are no external dependencies.
  *
- * Two things are injected:
+ * Three things are injected:
  *   1. At the CREATION site ({@code new ReentrantLock()} and
  *      {@code lock.newCondition()}), a call that associates the object with
  *      the name of the variable/field that holds it. Naming chain:
  *      field -> local variable (needs {@code -g}) -> {@code Type@Class:line}.
  *   2. At the CALL sites ({@code lock()}, {@code unlock()}, {@code await()},
- *      {@code signal()}, {@code signalAll()}), calls to {@code Hooks} that
- *      record the events, passing the object itself for name resolution.
+ *      {@code signal()}, {@code signalAll()}, {@code start()}, {@code join()}),
+ *      calls to {@code Hooks} that record the events, passing the object
+ *      itself for name/type resolution.
+ *   3. At the ENTRY and every normal RETURN of a woven {@code run()} (on
+ *      classes that extend {@code Thread} or implement {@code Runnable}),
+ *      calls that mark the thread's lane as beginning/ending — so students no
+ *      longer need to call {@code Tracer.threadDone()} by hand.
  */
 final class LockWeaver {
 
     private static final String LOCKS_PKG = "java/util/concurrent/locks/";
     private static final String RLOCK     = "java/util/concurrent/locks/ReentrantLock";
     private static final String RRWLOCK   = "java/util/concurrent/locks/ReentrantReadWriteLock";
+    private static final String THREAD    = "java/lang/Thread";
+    private static final String RUNNABLE  = "java/lang/Runnable";
 
     private static final ClassDesc HOOKS = ClassDesc.of("pt.sd.trace.Hooks");
     private static final ClassDesc CD_Object = ClassDesc.of("java.lang.Object");
@@ -47,6 +55,7 @@ final class LockWeaver {
     private static final MethodTypeDesc MTD_ObjStr_v  = MethodTypeDesc.of(ClassDesc.ofDescriptor("V"), CD_Object, CD_String);
     private static final MethodTypeDesc MTD_ObjObj_Obj= MethodTypeDesc.of(CD_Object, CD_Object, CD_Object);
     private static final MethodTypeDesc MTD_ObjObjStr_Obj = MethodTypeDesc.of(CD_Object, CD_Object, CD_Object, CD_String);
+    private static final MethodTypeDesc MTD_v          = MethodTypeDesc.of(ClassDesc.ofDescriptor("V"));
 
     private LockWeaver() {}
 
@@ -55,15 +64,34 @@ final class LockWeaver {
         String simpleClass = internalName.substring(internalName.lastIndexOf('/') + 1);
         ClassFile cf = ClassFile.of();
         ClassModel cm = cf.parse(original);
+        boolean weaveRun = isThreadLike(cm);
 
         return cf.transformClass(cm, (classBuilder, classElement) -> {
             if (classElement instanceof MethodModel mm) {
+                boolean isRunMethod = weaveRun
+                        && mm.methodName().stringValue().equals("run")
+                        && mm.methodType().stringValue().equals("()V");
                 classBuilder.transformMethod(mm, (methodBuilder, methodElement) -> {
                     if (methodElement instanceof CodeModel code) {
                         Map<Integer, Deque<String>> lvt = readLocalNames(code);
                         int[] line = { -1 };
                         Pending[] pending = { null };
+                        boolean[] begun = { false };
                         methodBuilder.transformCode(code, (xb, e) -> {
+                            // 0) First element of a woven run(): mark the lane's true start.
+                            if (isRunMethod && !begun[0]) {
+                                begun[0] = true;
+                                xb.invokestatic(HOOKS, "onRunBegin", MTD_v);
+                            }
+
+                            // 0b) Every normal return of a woven run(): mark the lane's end.
+                            if (isRunMethod && e instanceof ReturnInstruction ri
+                                    && ri.opcode() == java.lang.classfile.Opcode.RETURN) {
+                                xb.invokestatic(HOOKS, "onRunEnd", MTD_v);
+                                xb.with(e);
+                                return;
+                            }
+
                             // 1) Closing a "pending" (creation waiting for its consumer).
                             if (pending[0] != null && e instanceof java.lang.classfile.Instruction) {
                                 Pending p = pending[0];
@@ -103,6 +131,30 @@ final class LockWeaver {
                                     xb.with(e);
                                     pending[0] = new Pending(simple(owner) + "@" + simpleClass + ":" + line[0]);
                                     return;
+                                }
+
+                                // Thread lifecycle: start()/join() matched by NAME ALONE, not
+                                // owner — a student's `class Worker extends Thread` compiles
+                                // `w.start()` to invokevirtual Worker.start, so there is no
+                                // reliable owner to check without loading the class hierarchy.
+                                // Hooks re-checks `instanceof Thread` at runtime and no-ops
+                                // otherwise, so a false match here just costs one dead call.
+                                // Only the no-arg descriptors: timed join(long) isn't covered,
+                                // consistent with skipping tryLock/timed await elsewhere.
+                                switch (nm + desc) {
+                                    case "start()V" -> {
+                                        xb.dup();
+                                        xb.invokestatic(HOOKS, "onThreadStart", MTD_Obj_v);
+                                        xb.with(e);
+                                        return;
+                                    }
+                                    case "join()V" -> {
+                                        xb.dup(); xb.dup();
+                                        xb.invokestatic(HOOKS, "onJoinBegin", MTD_Obj_v);
+                                        xb.with(e);
+                                        xb.invokestatic(HOOKS, "onJoinEnd", MTD_Obj_v);
+                                        return;
+                                    }
                                 }
 
                                 if (owner.startsWith(LOCKS_PKG)) {
@@ -204,6 +256,21 @@ final class LockWeaver {
 
     private static String simple(String internal) {
         return internal.substring(internal.lastIndexOf('/') + 1);
+    }
+
+    /**
+     * Whether {@code run()} on this class should be woven: direct subclass of
+     * {@code Thread}, or a direct implementer of {@code Runnable}. Deliberately
+     * shallow (checks one level, not the full hierarchy) — cheap to read off
+     * the {@code ClassModel} without loading any class.
+     */
+    private static boolean isThreadLike(ClassModel cm) {
+        var sc = cm.superclass();
+        if (sc.isPresent() && sc.get().asInternalName().equals(THREAD)) return true;
+        for (var iface : cm.interfaces()) {
+            if (iface.asInternalName().equals(RUNNABLE)) return true;
+        }
+        return false;
     }
 
     private record Pending(String fallback) {}

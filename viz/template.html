@@ -9,6 +9,7 @@
     --bg:#0a0e1a; --panel:#0f1524; --panel2:#0c1120; --rule:#1f2a42; --rule-soft:#161f33;
     --ink:#e7ecfb; --muted:#8391b0; --faint:#4a597b;
     --hold:#2dd4bf; --shared:#5eead4; --block:#f5a524; --wait:#a78bfa; --signal:#f472b6;
+    --join:#38bdf8;
     --lifeline:#2a3a5e; --handoff:#5b6b93;
   }
   *{box-sizing:border-box}
@@ -77,6 +78,7 @@
   .band.HOLDING_SHARED{fill:url(#hatch); stroke:var(--shared); stroke-dasharray:3 2}
   .band.BLOCKED{fill:rgba(245,165,36,.16); stroke:var(--block)}
   .band.WAITING{fill:rgba(167,139,250,.18); stroke:var(--wait)}
+  .band.JOINING{fill:rgba(56,189,248,.16); stroke:var(--join)}
   .band{stroke-width:1; rx:5}
   .lam{fill:var(--muted); font-size:10px}
   .note-lbl{fill:var(--muted); font-size:10.5px}
@@ -160,7 +162,7 @@
 const TRACE = /*__TRACE__*/{"events":[]}/*__END__*/;
 
 /* ===== Processing logic (identical to viz/core.js, validated in node) ===== */
-const STATE = { RUNNING:"RUNNING", HOLDING:"HOLDING", HOLDING_SHARED:"HOLDING_SHARED", BLOCKED:"BLOCKED", WAITING:"WAITING", TERMINATED:"TERMINATED" };
+const STATE = { RUNNING:"RUNNING", HOLDING:"HOLDING", HOLDING_SHARED:"HOLDING_SHARED", BLOCKED:"BLOCKED", WAITING:"WAITING", JOINING:"JOINING", TERMINATED:"TERMINATED" };
 const bySeq = (a,b)=>a.seq-b.seq;
 function threadOrder(events){
   const seen=[], set=new Set();
@@ -183,6 +185,9 @@ function stateSegments(events, axisKey){
         case "AWAIT_BEGIN":   push(at); state=STATE.WAITING; break;
         case "AWAIT_WAKEUP":  push(at); state=STATE.HOLDING; break;
         case "LOCK_RELEASED": push(at); state=STATE.RUNNING; break;
+        case "JOIN_BEGIN":    push(at); state=STATE.JOINING; break;
+        case "THREAD_JOIN":   push(at); state=STATE.RUNNING; break;
+        case "THREAD_BEGIN":  push(at); state=STATE.RUNNING; break;
         case "THREAD_END":    push(at); state=STATE.TERMINATED; break;
         default: break;
       }
@@ -201,7 +206,9 @@ function axisRange(events, axisKey){
 const KIND_LABEL = {
   LOCK_REQUEST:"Lock request", LOCK_ACQUIRED:"Lock acquired", LOCK_RELEASED:"Lock released",
   AWAIT_BEGIN:"await() — enters wait", AWAIT_WAKEUP:"await() returns — reacquires the lock",
-  SIGNAL:"signal()", SIGNAL_ALL:"signalAll()", NOTE:"Application mark", THREAD_END:"Thread end"
+  SIGNAL:"signal()", SIGNAL_ALL:"signalAll()", NOTE:"Application mark", THREAD_END:"Thread end",
+  THREAD_START:"start()", THREAD_BEGIN:"Thread begins (run() entry)",
+  JOIN_BEGIN:"join() — blocks", THREAD_JOIN:"join() returns"
 };
 
 /* ===== Geometry ===== */
@@ -257,6 +264,14 @@ function glyph(kind, cx, cy, mode, withHit){
                           add(el("path",{d:`M${cx},${cy-5.5} L${cx+5.5},${cy} L${cx},${cy+5.5} L${cx-5.5},${cy} Z`,fill:"var(--signal)"})); g.style.color="var(--signal)"; break;
     case "NOTE":          add(el("circle",{cx,cy,r:2.6,fill:"none",stroke:"var(--muted)","stroke-width":1.2})); g.style.color="var(--muted)"; break;
     case "THREAD_END":    add(el("path",{d:`M${cx-4},${cy-4} L${cx+4},${cy+4} M${cx+4},${cy-4} L${cx-4},${cy+4}`,stroke:"var(--faint)","stroke-width":1.6})); g.style.color="var(--faint)"; break;
+    // Thread lifecycle: START/BEGIN echo the SIGNAL/AWAIT_WAKEUP sender/receiver
+    // pair (a diamond "sent", a filled triangle "received"); JOIN_BEGIN/THREAD_JOIN
+    // echo AWAIT_BEGIN/AWAIT_WAKEUP (entering vs. leaving a blocked state) — all in
+    // var(--join) so the family reads as one thing distinct from locks/conditions.
+    case "THREAD_START":  add(el("path",{d:`M${cx},${cy-5.5} L${cx+5.5},${cy} L${cx},${cy+5.5} L${cx-5.5},${cy} Z`,fill:"var(--join)"})); g.style.color="var(--join)"; break;
+    case "THREAD_BEGIN":  add(el("circle",{cx,cy,r:4.8,fill:"none",stroke:"var(--join)","stroke-width":1.8})); add(el("circle",{cx,cy,r:1.8,fill:"var(--join)"})); g.style.color="var(--join)"; break;
+    case "JOIN_BEGIN":    add(el("path",{d:`M${cx-5},${cy-4} L${cx+5},${cy-4} L${cx},${cy+5} Z`,fill:"none",stroke:"var(--join)","stroke-width":1.8})); g.style.color="var(--join)"; break;
+    case "THREAD_JOIN":   add(el("path",{d:`M${cx-5},${cy+4} L${cx+5},${cy+4} L${cx},${cy-5} Z`,fill:"var(--join)"})); g.style.color="var(--join)"; break;
   }
   return g;
 }
@@ -544,6 +559,8 @@ function showTip(e, ev, isPinned){
   html += `<div class="lamx">Lamport clock = <b>${e.lamport}</b></div>`;
   if(cs.length){
     const label = e.kind==="AWAIT_WAKEUP" ? "woken by"
+                : e.kind==="THREAD_BEGIN" ? "started by"
+                : e.kind==="THREAD_JOIN"  ? "after"
                 : (cs.length>1 ? "only entered after ALL had left" : "after release by");
     html += `<div class="cause">${label}`;
     for(const c of cs) html += `<br><b>${c.thread}</b> · ${KIND_LABEL[c.kind]||c.kind} (L${c.lamport})`;
@@ -575,7 +592,9 @@ function buildGlyphLegend(){
   const items=[
     ["LOCK_REQUEST","lock request"],["LOCK_ACQUIRED","acquired"],["LOCK_RELEASED","released"],
     ["AWAIT_BEGIN","await (enters)"],["AWAIT_WAKEUP","await (returns)"],["SIGNAL","signal"],
-    ["NOTE","mark"],["THREAD_END","end"]
+    ["NOTE","mark"],
+    ["THREAD_START","thread start"],["THREAD_BEGIN","thread begin"],
+    ["JOIN_BEGIN","join (blocked)"],["THREAD_JOIN","join returns"],["THREAD_END","end"]
   ];
   const gl=document.getElementById("glyphLegend");
   for(const [kind,lbl] of items){
