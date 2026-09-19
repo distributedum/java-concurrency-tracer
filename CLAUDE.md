@@ -123,7 +123,12 @@ throughout, no older-JDK fallback).
   **Duplicated** (by design, so the viewer has no build step) as an inline copy in
   `template.html` — the two must be kept in sync by hand.
 - **`template.html`** — the viewer shell with a `/*__TRACE__*/ ... /*__END__*/`
-  marker where build scripts inject a trace.
+  marker where build scripts inject a trace. Light and dark palettes are both
+  CSS custom properties (`:root` for dark, `:root[data-theme="light"]` for
+  light); every colour that reaches the SVG — CSS rules, legend swatches, and
+  the glyph/hatch colours set from JS — must be `var(--token)`, never a literal,
+  or the theme switch (top-right, Light/Dark/Auto, persisted in `localStorage`)
+  silently stops applying to it.
 - **`spacetime.html`** — `template.html` with a trace already embedded, committed so
   it opens standalone with a working example; also the file `run-demo.sh`
   overwrites with the newly generated trace.

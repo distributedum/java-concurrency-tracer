@@ -4,13 +4,59 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Space-time diagram — locks &amp; condition variables</title>
+<script>
+/* Applied before first paint so there's no flash of the wrong theme.
+   Preference ("light"/"dark"/"system") persists in localStorage; "system"
+   resolves live against the OS setting. localStorage can throw under
+   file:// with blocked site data, hence the try/catch. */
+(function(){
+  var pref = "system";
+  try{ pref = localStorage.getItem("sdtrace-theme") || "system"; }catch(e){}
+  var resolved = pref === "system"
+    ? (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light")
+    : pref;
+  document.documentElement.dataset.theme = resolved;
+  document.documentElement.dataset.themePref = pref;
+})();
+</script>
 <style>
   :root{
     --bg:#0a0e1a; --panel:#0f1524; --panel2:#0c1120; --rule:#1f2a42; --rule-soft:#161f33;
-    --ink:#e7ecfb; --muted:#8391b0; --faint:#4a597b;
+    --rule-strong:#2c3a5c;
+    --ink:#e7ecfb; --muted:#8391b0; --faint:#6d7c9f;
     --hold:#2dd4bf; --shared:#5eead4; --block:#f5a524; --wait:#a78bfa; --signal:#f472b6;
     --join:#38bdf8;
     --lifeline:#2a3a5e; --handoff:#5b6b93;
+    --head-a:#0d1424; --head-b:#0a0e1a;
+    --seg-on:#16213a; --seg-on-ink:var(--ink);
+    --kbd-bg:rgba(255,255,255,.03);
+    --tip-bg:#0c1322; --shadow:rgba(0,0,0,.5);
+    --hold-fill:rgba(45,212,191,.16); --shared-fill:rgba(94,234,212,.10); --shared-line:rgba(94,234,212,.55);
+    --block-fill:rgba(245,165,36,.16); --wait-fill:rgba(167,139,250,.18); --join-fill:rgba(56,189,248,.16);
+    --hold-fill-legend:rgba(45,212,191,.30); --shared-fill-legend:rgba(94,234,212,.30);
+    --block-fill-legend:rgba(245,165,36,.35); --wait-fill-legend:rgba(167,139,250,.35);
+    --release-fill:var(--lifeline); --release-stroke:#6b7ba6; --release-ink:#8ea0cc;
+    --dim-op:.12; --dim-edge-op:.05;
+    color-scheme: dark;
+  }
+  :root[data-theme="light"]{
+    --bg:#f7f9fc; --panel:#eef2f8; --panel2:#f0f4fa; --rule:#c3cddd; --rule-soft:#dde4ef;
+    --rule-strong:#a9b6cc;
+    --ink:#131a2a; --muted:#4a5872; --faint:#5f6d88;
+    --hold:#0f766e; --shared:#0d9488; --block:#b45309; --wait:#6d28d9; --signal:#be185d;
+    --join:#0369a1;
+    --lifeline:#7d8ca8; --handoff:#5c6b8a;
+    --head-a:#eef2f8; --head-b:#f7f9fc;
+    --seg-on:#dde6f3; --seg-on-ink:var(--ink);
+    --kbd-bg:rgba(15,23,42,.04);
+    --tip-bg:#ffffff; --shadow:rgba(15,23,42,.18);
+    --hold-fill:rgba(15,118,110,.14); --shared-fill:rgba(13,148,136,.10); --shared-line:rgba(13,148,136,.5);
+    --block-fill:rgba(180,83,9,.14); --wait-fill:rgba(109,40,217,.13); --join-fill:rgba(3,105,161,.13);
+    --hold-fill-legend:rgba(15,118,110,.24); --shared-fill-legend:rgba(13,148,136,.22);
+    --block-fill-legend:rgba(180,83,9,.24); --wait-fill-legend:rgba(109,40,217,.22);
+    --release-fill:#c7d0e0; --release-stroke:#56648a; --release-ink:#56648a;
+    --dim-op:.18; --dim-edge-op:.08;
+    color-scheme: light;
   }
   *{box-sizing:border-box}
   html,body{margin:0;height:100%}
@@ -23,7 +69,7 @@
 
   header{
     padding:14px 20px 12px; border-bottom:1px solid var(--rule);
-    background:linear-gradient(180deg,#0d1424,#0a0e1a);
+    background:linear-gradient(180deg,var(--head-a),var(--head-b));
     display:flex; align-items:flex-end; gap:22px; flex-wrap:wrap;
   }
   .brand h1{
@@ -32,7 +78,8 @@
   .brand .sub{
     margin-top:3px; font-size:11.5px; color:var(--muted); letter-spacing:.06em; text-transform:uppercase;
   }
-  .stats{display:flex; gap:16px; margin-left:auto; align-items:center}
+  .head-right{display:flex; flex-direction:column; gap:8px; align-items:flex-end; margin-left:auto}
+  .stats{display:flex; gap:16px; align-items:center}
   .stat{font-size:11px; color:var(--muted); text-align:right; line-height:1.25}
   .stat b{display:block; font-size:16px; color:var(--ink)}
   .stat b.mono{font-size:15px}
@@ -47,15 +94,16 @@
     background:transparent; color:var(--muted); border:0; padding:6px 12px; cursor:pointer;
     font:inherit; letter-spacing:.01em;
   }
-  .seg button.on{background:#16213a; color:var(--ink)}
+  .seg button.on{background:var(--seg-on); color:var(--seg-on-ink)}
   .seg button+button{border-left:1px solid var(--rule)}
+  .seg.compact button{padding:4px 9px; font-size:11px}
   .toggle{display:inline-flex; align-items:center; gap:7px; color:var(--muted); cursor:pointer; user-select:none}
   .toggle input{accent-color:var(--wait); width:15px; height:15px}
   .zoom{display:inline-flex; align-items:center; gap:8px; color:var(--muted)}
   .zoom input{width:130px; accent-color:var(--hold)}
   .kbd-hint{color:var(--faint); font-size:10.5px; letter-spacing:.02em}
   .kbd-hint kbd{font:inherit; border:1px solid var(--rule); border-bottom-width:2px;
-    border-radius:3px; padding:0 3px; color:var(--muted); background:rgba(255,255,255,.03)}
+    border-radius:3px; padding:0 3px; color:var(--muted); background:var(--kbd-bg)}
   .ctl-label{color:var(--faint); font-size:11px; text-transform:uppercase; letter-spacing:.07em; margin-right:2px}
 
   .legend{display:flex; gap:14px 18px; flex-wrap:wrap; padding:9px 20px; border-bottom:1px solid var(--rule); font-size:11.5px; color:var(--muted); background:var(--panel2)}
@@ -74,11 +122,11 @@
   .axislabel{fill:var(--faint); font-size:10.5px}
   .lifeline{stroke:var(--lifeline); stroke-width:1.5}
   .band{opacity:.9}
-  .band.HOLDING{fill:rgba(45,212,191,.16); stroke:var(--hold)}
+  .band.HOLDING{fill:var(--hold-fill); stroke:var(--hold)}
   .band.HOLDING_SHARED{fill:url(#hatch); stroke:var(--shared); stroke-dasharray:3 2}
-  .band.BLOCKED{fill:rgba(245,165,36,.16); stroke:var(--block)}
-  .band.WAITING{fill:rgba(167,139,250,.18); stroke:var(--wait)}
-  .band.JOINING{fill:rgba(56,189,248,.16); stroke:var(--join)}
+  .band.BLOCKED{fill:var(--block-fill); stroke:var(--block)}
+  .band.WAITING{fill:var(--wait-fill); stroke:var(--wait)}
+  .band.JOINING{fill:var(--join-fill); stroke:var(--join)}
   .band{stroke-width:1; rx:5}
   .lam{fill:var(--muted); font-size:10px}
   .note-lbl{fill:var(--muted); font-size:10.5px}
@@ -88,19 +136,19 @@
   .edge.signal{stroke:var(--signal); stroke-width:1.7; opacity:.75}
   .mk{cursor:pointer}
   /* highlight on hover */
-  svg.dim .band, svg.dim .lifeline, svg.dim .mk, svg.dim .edge, svg.dim .lam, svg.dim .note-lbl{opacity:.12}
-  svg.dim .edge{opacity:.05}
+  svg.dim .band, svg.dim .lifeline, svg.dim .mk, svg.dim .edge, svg.dim .lam, svg.dim .note-lbl{opacity:var(--dim-op)}
+  svg.dim .edge{opacity:var(--dim-edge-op)}
   .hot{opacity:1 !important}
   path.edge.hot{opacity:1 !important; stroke-width:2.4}
   .mk.hot circle,.mk.hot rect,.mk.hot path,.mk.hot polygon{filter:drop-shadow(0 0 4px currentColor)}
 
   #tip{
     position:fixed; pointer-events:none; z-index:20; max-width:320px;
-    background:#0c1322; border:1px solid var(--rule); border-radius:9px;
+    background:var(--tip-bg); border:1px solid var(--rule); border-radius:9px;
     padding:10px 12px; font-size:12px; line-height:1.5; color:var(--ink);
-    box-shadow:0 10px 30px rgba(0,0,0,.5); opacity:0; transition:opacity .08s;
+    box-shadow:0 10px 30px var(--shadow); opacity:0; transition:opacity .08s;
   }
-  #tip.pinned{pointer-events:auto; border-color:#3a4a6b; box-shadow:0 12px 34px rgba(0,0,0,.6)}
+  #tip.pinned{pointer-events:auto; border-color:var(--rule-strong); box-shadow:0 12px 34px var(--shadow)}
   #tip .k{font-weight:650; letter-spacing:.01em}
   #tip .hint{margin-top:7px; padding-top:6px; border-top:1px solid var(--rule); color:var(--faint); font-size:10.5px}
   #diag .mk{cursor:pointer; pointer-events:auto}
@@ -120,7 +168,14 @@
     <h1>Space-time diagram of a concurrent execution</h1>
     <div class="sub" id="scenario">Producer / Consumer · bounded buffer · ReentrantLock + Condition</div>
   </div>
-  <div class="stats" id="stats"></div>
+  <div class="head-right">
+    <span class="seg compact" id="themeSeg" aria-label="Colour theme">
+      <button type="button" data-pref="light" aria-pressed="false">Light</button>
+      <button type="button" data-pref="dark" aria-pressed="false">Dark</button>
+      <button type="button" data-pref="system" aria-pressed="false">Auto</button>
+    </span>
+    <div class="stats" id="stats"></div>
+  </div>
 </header>
 
 <div class="controls">
@@ -145,10 +200,10 @@
 
 <div class="legend">
   <div class="grp">
-    <span class="key"><span class="swatch" style="background:rgba(245,165,36,.35);border:1px solid var(--block)"></span> blocked on lock</span>
-    <span class="key"><span class="swatch" style="background:rgba(45,212,191,.30);border:1px solid var(--hold)"></span> critical section (exclusive)</span>
-    <span class="key"><span class="swatch" style="background:repeating-linear-gradient(45deg,rgba(94,234,212,.30),rgba(94,234,212,.30) 2px,transparent 2px,transparent 4px);border:1px dashed var(--shared)"></span> read (shared)</span>
-    <span class="key"><span class="swatch" style="background:rgba(167,139,250,.35);border:1px solid var(--wait)"></span> waiting (condition)</span>
+    <span class="key"><span class="swatch" style="background:var(--block-fill-legend);border:1px solid var(--block)"></span> blocked on lock</span>
+    <span class="key"><span class="swatch" style="background:var(--hold-fill-legend);border:1px solid var(--hold)"></span> critical section (exclusive)</span>
+    <span class="key"><span class="swatch" style="background:repeating-linear-gradient(45deg,var(--shared-fill-legend),var(--shared-fill-legend) 2px,transparent 2px,transparent 4px);border:1px dashed var(--shared)"></span> read (shared)</span>
+    <span class="key"><span class="swatch" style="background:var(--wait-fill-legend);border:1px solid var(--wait)"></span> waiting (condition)</span>
   </div>
   <div class="sep"></div>
   <div class="grp" id="glyphLegend"></div>
@@ -257,7 +312,7 @@ function glyph(kind, cx, cy, mode, withHit){
       if(mode==="READ"){ add(el("circle",{cx,cy,r:4.8,fill:"none",stroke:"var(--shared)","stroke-width":2})); g.style.color="var(--shared)"; }
       else { add(el("circle",{cx,cy,r:4.8,fill:"var(--hold)"})); g.style.color="var(--hold)"; }
       break;
-    case "LOCK_RELEASED": add(el("rect",{x:cx-4,y:cy-4,width:8,height:8,rx:1.5,fill:"var(--lifeline)",stroke:"#6b7ba6"})); g.style.color="#8ea0cc"; break;
+    case "LOCK_RELEASED": add(el("rect",{x:cx-4,y:cy-4,width:8,height:8,rx:1.5,fill:"var(--release-fill)",stroke:"var(--release-stroke)"})); g.style.color="var(--release-ink)"; break;
     case "AWAIT_BEGIN":   add(el("path",{d:`M${cx-5},${cy-4} L${cx+5},${cy-4} L${cx},${cy+5} Z`,fill:"none",stroke:"var(--wait)","stroke-width":1.8})); g.style.color="var(--wait)"; break;
     case "AWAIT_WAKEUP":  add(el("path",{d:`M${cx-5},${cy+4} L${cx+5},${cy+4} L${cx},${cy-5} Z`,fill:"var(--wait)"})); g.style.color="var(--wait)"; break;
     case "SIGNAL": case "SIGNAL_ALL":
@@ -305,8 +360,8 @@ function render(){
   defs.appendChild(arrow("ahSignal","var(--signal)"));
   // hatching for SHARED (read) ownership: signals "several at the same time"
   const hatch=el("pattern",{id:"hatch",width:6,height:6,patternUnits:"userSpaceOnUse",patternTransform:"rotate(45)"});
-  hatch.appendChild(el("rect",{width:6,height:6,fill:"rgba(94,234,212,.10)"}));
-  hatch.appendChild(el("line",{x1:0,y1:0,x2:0,y2:6,stroke:"rgba(94,234,212,.55)","stroke-width":2}));
+  hatch.appendChild(el("rect",{width:6,height:6,fill:"var(--shared-fill)"}));
+  hatch.appendChild(el("line",{x1:0,y1:0,x2:0,y2:6,stroke:"var(--shared-line)","stroke-width":2}));
   defs.appendChild(hatch);
   svg.appendChild(defs);
 
@@ -605,6 +660,38 @@ function buildGlyphLegend(){
     gl.appendChild(wrap);
   }
 }
+
+/* ===== Theme: light / dark / system =====
+   Reads/writes the same "sdtrace-theme" key the inline <head> script already
+   applied before first paint. No render() call is needed on switch — every
+   colour reaches the SVG through a CSS custom property, so the browser
+   repaints on its own the moment data-theme changes. */
+const themeSeg = document.getElementById("themeSeg");
+const prefersDark = matchMedia("(prefers-color-scheme: dark)");
+
+function syncThemeButtons(pref){
+  themeSeg.querySelectorAll("button").forEach(b=>{
+    const on = b.dataset.pref === pref;
+    b.classList.toggle("on", on);
+    b.setAttribute("aria-pressed", on);
+  });
+}
+function applyTheme(pref){
+  const resolved = pref==="system" ? (prefersDark.matches ? "dark" : "light") : pref;
+  document.documentElement.dataset.theme = resolved;
+  document.documentElement.dataset.themePref = pref;
+  try{ localStorage.setItem("sdtrace-theme", pref); }catch(e){}
+  syncThemeButtons(pref);
+}
+themeSeg.addEventListener("click", e=>{
+  const b=e.target.closest("button[data-pref]"); if(!b) return;
+  applyTheme(b.dataset.pref);
+});
+// Live-follow the OS setting, but only while "system" is the active preference.
+prefersDark.addEventListener("change", ()=>{
+  if(document.documentElement.dataset.themePref==="system") applyTheme("system");
+});
+syncThemeButtons(document.documentElement.dataset.themePref || "system");
 
 /* ===== Control bindings ===== */
 // Clicking OUTSIDE a marker (diagram background, panel, anywhere) dismisses the box.

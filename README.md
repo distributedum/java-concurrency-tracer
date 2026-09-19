@@ -94,7 +94,9 @@ Running the program writes `trace.json` to the working directory (via a
 shutdown hook — in IntelliJ that's the run configuration's working directory).
 Open `viz/spacetime.html` — a single file that works offline, no server needed
 — or the hosted [visualizer](https://fntneves.github.io/java-concurrency-tracer/)
-— and use **Open trace.json…**.
+— and use **Open trace.json…**. The Light/Dark/Auto switch in the top-right
+picks a projector-friendly light palette, a dark one, or follows the OS; the
+choice is remembered across reloads.
 
 | | |
 |---|---|
