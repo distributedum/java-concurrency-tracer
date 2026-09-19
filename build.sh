@@ -1,33 +1,35 @@
 #!/usr/bin/env bash
-# Usage: ./build.sh <demo-file.java> <ClassWithMain>
-# E.g.:  ./build.sh demo/BoundedBufferDemo.java BoundedBufferDemo
+# Builds sdtrace-agent.jar: a single file that works both as a library
+# (JDK 21+) and as a -javaagent (JDK 24+, java.lang.classfile).
+#
+# Usage: ./build.sh
 set -euo pipefail
 
-SRC="${1:-demo/BoundedBufferDemo.java}"
-MAIN="${2:-BoundedBufferDemo}"
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 cd "$ROOT"
 
-echo "» compiling…"
+JAVAC="${JAVAC:-javac}"
+JAVA="${JAVA:-java}"
+
+ver="$("$JAVA" -version 2>&1 | head -1)"
+echo "» JDK: $ver"
+
+echo "» compiling runtime + agent…"
 mkdir -p out
-javac -g -encoding UTF-8 -d out src/pt/sd/trace/*.java "$SRC"
+# -g matters: without the local variable table, locks/conditions held in
+# LOCAL variables fall back to Type@Class:line (fields are always fine).
+# The runtime targets bytecode 21 and the agent targets 24: this way THE SAME
+# jar serves both paths (library on JDK 21+, agent on JDK 24+).
+"$JAVAC" --release 21 -g -encoding UTF-8 -d out src/pt/sd/trace/*.java
+"$JAVAC" --release 24 -g -encoding UTF-8 -cp out -d out src/pt/sd/trace/agent/*.java
 
-echo "» running ${MAIN}…"
-java -cp out "$MAIN"
+echo "» packaging sdtrace-agent.jar…"
+cat > .agent-mf.txt <<'EOF'
+Manifest-Version: 1.0
+Premain-Class: pt.sd.trace.agent.Agent
+Can-Retransform-Classes: false
+EOF
+"${JAVAC%javac}jar" cfm sdtrace-agent.jar .agent-mf.txt -C out pt
+rm -f .agent-mf.txt
 
-# Injects trace.json into the template, producing a ready-to-open spacetime.html.
-# Uses python3 if present; otherwise leaves trace.json to be loaded by hand.
-if command -v python3 >/dev/null 2>&1; then
-  python3 - <<'PY'
-import re
-tpl=open('viz/template.html').read()
-trace=open('trace.json').read().strip()
-new=re.sub(r'/\*__TRACE__\*/.*?/\*__END__\*/','/*__TRACE__*/'+trace+'/*__END__*/',tpl,flags=re.S)
-open('viz/spacetime.html','w').write(new)
-print("» viz/spacetime.html updated with the new trace")
-PY
-else
-  echo "» python3 not found: open viz/spacetime.html and use “Open trace.json…”"
-fi
-
-echo "» done. Open viz/spacetime.html in your browser."
+echo "» done. sdtrace-agent.jar is ready."

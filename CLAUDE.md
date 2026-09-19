@@ -30,21 +30,16 @@ source of truth for event ordering, Lamport clocks, and causal edges.
 ## Build & run commands
 
 ```bash
-# Agent path (recommended default, JDK 24+, transparent instrumentation)
-./build-agent.sh demo/BoundedBufferRaw.java BoundedBufferRaw
-# equivalent manual steps: compiles runtime with --release 21, agent classes with
-# --release 24, packages both into sdtrace-agent.jar, then runs with -javaagent
+./build.sh
+# compiles runtime with --release 21, agent classes with --release 24, packages
+# both into sdtrace-agent.jar. Touches only the jar.
 
-# Wrapper path (fallback for JDK 21-23, compile with -g for readable names)
-./build.sh demo/BoundedBufferDemo.java BoundedBufferDemo
-# equivalent manual steps:
-mkdir -p out
-javac -g -encoding UTF-8 -d out src/pt/sd/trace/*.java demo/BoundedBufferDemo.java
-java -cp out BoundedBufferDemo   # writes trace.json via shutdown hook
+./run-demo.sh demo/BoundedBufferRaw.java BoundedBufferRaw
+# (args optional, default to the line above) builds the jar, compiles the demo
+# against it, runs it with -javaagent, and re-embeds trace.json into
+# viz/spacetime.html by injecting it into viz/template.html (via a python3
+# inline script, if available)
 ```
-
-Both scripts also regenerate `viz/spacetime.html` by injecting the freshly produced
-`trace.json` into `viz/template.html` (via a `python3` inline script, if available).
 
 There is no test suite or linter in this repo; `viz/core.js` is written to be
 `require`-able from Node for manual/ad-hoc checks (`module.exports` at the bottom)
@@ -53,8 +48,9 @@ but there's no test harness set up.
 ### Versioned generated artifacts
 
 `sdtrace-agent.jar` and `viz/spacetime.html` are intentionally committed so students
-can use them without compiling anything. Running either build script **modifies
-both files** (recompiled jar, new embedded trace). To discard those local changes:
+can use them without compiling anything. `build.sh` only recompiles the jar;
+`run-demo.sh` additionally overwrites `viz/spacetime.html` with a freshly embedded
+trace. To discard those local changes:
 `git checkout -- sdtrace-agent.jar viz/spacetime.html`.
 
 ## Architecture

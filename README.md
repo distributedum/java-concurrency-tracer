@@ -1,357 +1,142 @@
-# Space-time diagram of concurrent Java executions
+# java-concurrency-tracer
 
-A teaching tool for **Distributed Systems**: students instrument their own code
-with locks and condition variables and get a **visual representation** of the
-execution — who blocks waiting for a lock, who waits on a condition, who signaled
-whom, the state of each *thread* at every instant, and the causality relations
-(*happens-before*) annotated with **Lamport clocks**.
+![Space-time diagram of a single wait/signal handoff, on the Lamport-clock axis](assets/screenshot.png)
+*The smallest possible example: `Waiter` parks on a condition, `Signaler` sets a flag
+and wakes it, `main` joins both. Every event above is caused by the one before it —
+that causal chain is what this tool makes visible.*
 
-No external dependencies: just the JDK to run the program and a browser to open
-the diagram. Works offline.
+A Java agent that lets you see causality in concurrent programs. Point it at any
+program that uses locks and condition variables and you get a space-time diagram
+of what actually happened: who blocked on which lock, who waited on which
+condition, who signalled whom, and which events really happened before which —
+annotated with Lamport clocks. Your own code stays exactly as it is.
 
-> **To hand out to students: see [`docs/STUDENT-GUIDE.md`](docs/STUDENT-GUIDE.md)** —
-> step-by-step instructions for IntelliJ and the command line, for both paths,
-> including how to restrict instrumentation to their own classes (`include=`) and a
-> troubleshooting table.
+## Setup
 
----
+### Build the jar
 
-## What students do (workflow)
+```bash
+./build.sh
+```
 
-1. **Use the standard lock API, unchanged.** Recommended path: students keep
-   writing `java.util.concurrent.locks.ReentrantLock`/`Condition` exactly as
-   usual — **no code changes** — and a **Java agent** injects the
-   instrumentation at class-loading time. Just add a command-line flag:
+Produces `sdtrace-agent.jar` — the same file works both as a `-javaagent` and as
+a library on the classpath. It's already committed, so this step is optional
+unless you've changed the source.
 
-   ```bash
-   javac -g -d out demo/BoundedBufferRaw.java          # -g helps with naming (see below)
-   java -javaagent:sdtrace-agent.jar -cp out BoundedBufferRaw
-   # generates the same trace.json; open viz/spacetime.html as usual
+### IntelliJ IDEA
+
+1. **Project SDK**: *File → Project Structure → Project → SDK* → a JDK **24 or
+   higher** (*Add SDK → Download JDK…* if none is installed).
+2. **Add the library**: right-click `sdtrace-agent.jar` → **Add as Library…**
+   (needed for `Tracer.note(...)`).
+3. **Activate the agent**: *Run → Edit Configurations…* → select your run
+   configuration → **Modify options → Add VM options**, then set:
+
+   ```
+   -javaagent:sdtrace-agent.jar=include=your.package
    ```
 
-   Or with the shortcut: `./build-agent.sh demo/BoundedBufferRaw.java BoundedBufferRaw`.
+   (wrap it in quotes if the path contains spaces). Run it — the console should
+   print `[sdtrace] agent active | include=your/package`; if it doesn't, the
+   `-javaagent` option wasn't picked up.
 
-   > **Fallback for JDK 21–23:** the agent requires JDK 24+. If you're stuck on
-   > an older JDK, swap `ReentrantLock` for `TracedLock` instead — the only
-   > change to your code:
-   >
-   > ```java
-   > import pt.sd.trace.*;
-   >
-   > TracedLock lock     = new TracedLock("bufferLock");   // instead of new ReentrantLock()
-   > TracedCondition full = lock.newCondition("full");      // condition with a readable name
-   > TracedCondition empty = lock.newCondition("empty");
-   > ```
-   >
-   > `TracedLock` implements `java.util.concurrent.locks.Lock` and
-   > `TracedCondition` implements `Condition`, so the rest of the code stays
-   > **exactly the same** (`lock.lock()`, `cond.await()`, `cond.signal()`,
-   > `lock.unlock()`, ...). See the *"Wrappers path"* details below.
+### javac and java
 
-2. **(Optional)** mark application-level events wherever they want:
+```bash
+javac -g -cp sdtrace-agent.jar -d out src/*.java
+java -javaagent:sdtrace-agent.jar=include=your.package -cp sdtrace-agent.jar:out Main
+```
 
-   ```java
-   Tracer.note("produced " + v + " (buffer=" + buffer.size() + ")");
-   ```
+On Windows, use `;` instead of `:` as the classpath separator. `include=` takes
+comma-separated package prefixes and keeps other classpath libraries' internal
+locks out of the diagram; `-g` only matters for locks held in local variables
+(see Known limitations).
 
-3. **Run the program.** At the end, a `trace.json` file is automatically written
-   to the working directory (via a *shutdown hook*). They can also force it with
-   `Tracer.get().dump(java.nio.file.Path.of("trace.json"))`.
+## Usage
 
-4. **Open `spacetime.html`** in the browser (just double-click it). It already
-   comes with an example loaded. Click the **"Open trace.json…"** button and
-   choose the file generated by their program. The diagram updates.
+### Instrumenting a class
 
----
-
-## Wrappers path (fallback for JDK 21–23)
-
-The agent above needs JDK 24+. On an older JDK, use the wrappers instead: swap
-`ReentrantLock` for `TracedLock` (see the code snippet above) — everything else
-about the workflow stays the same.
-
----
-
-## How the agent works
-
-The agent rewrites the *bytecode* of student classes to:
-
-1. **name** each lock/condition at its creation site (`new ReentrantLock()`,
-   `lock.newCondition()`), and
-2. **wrap** the `lock()`, `unlock()`, `await()`, `signal()` and `signalAll()`
-   calls with event recording.
-
-### Where the names come from
-
-Since no string is passed by hand, the name is inferred from the variable or
-field that holds the object, in this order:
-
-- **field** (e.g. `private final Lock lock = ...`) → field name (**always
-  reliable**, it's in the *bytecode*);
-- **local variable** (e.g. `Lock myLock = ...`) → variable name, **as long as
-  it's compiled with `-g`** (the local variable table is only emitted that way;
-  IDEs and Gradle/Maven already do this by default);
-- **fallback** → `Type@Class:line` (e.g. `ReentrantLock@BoundedBufferRaw:27`),
-  using the line number, which `javac` keeps by default.
-
-In the typical monitor pattern used in the course, the lock and conditions are
-**fields** of the shared object, so they come out with nice names (`lock`,
-`empty`, `full`) **with no flags at all**.
-
-### Requirements and scope
-
-- Requires **JDK 24+** (the agent uses the standard *Class-File API*,
-  `java.lang.classfile`, final in JDK 24 — **zero external dependencies**). For
-  anyone who has to stay on **JDK 21 (LTS)**, the wrappers path above still
-  works.
-- Instruments calls on `java.util.concurrent.locks.*`. **Left out** (documented,
-  so as not to mislead): `tryLock`, the timed `await` variants (`awaitNanos`,
-  `await(t,u)`) and `synchronized`/`wait`/`notify` (which don't go through these
-  classes). The no-argument `await()`/`awaitUninterruptibly()` pair is covered.
-- Restrict the target by package prefix:
-  `-javaagent:sdtrace-agent.jar=include=com.student,BoundedBufferRaw`.
-
-### Which of the two paths to use
-
-- **Agent (recommended)** — doesn't require touching students' code at all
-  (useful for instrumenting already-submitted assignments too), but requires
-  JDK 24+ and some naming discipline (fields, or `-g`). Default to this one.
-- **Wrappers (`TracedLock`)** — works on any JDK back to 21, gives explicit
-  names, and is fully transparent when reading the code. Use as the fallback
-  when stuck on JDK 21–23, or as a demonstration of what the agent does
-  implicitly.
-
-As a teaching note, the agent path illustrates well that **debug symbols** are a
-compilation choice and that *bytecode* doesn't carry local variable names by
-default — the same reason a *stack trace* sometimes shows `arg0` instead of the
-real name.
-
----
-
-## Reading the diagram
-
-- Each **column** is a *thread*; **time flows top to bottom**.
-- The thin vertical line is the *thread* running (without the lock).
-- The **colored bands** are the notable states:
-  - **amber** — blocked waiting to acquire the lock (between `lock()` and actual
-    ownership);
-  - **turquoise (solid)** — **exclusive** ownership: inside the critical section
-    (`ReentrantLock`, or the *write lock* of a `ReadWriteLock`);
-  - **turquoise (hatched, dashed)** — **shared** ownership: inside the *read
-    lock* of a `ReadWriteLock`. Several *threads* can show this band **at the
-    same time** — that overlap is what shows readers don't exclude each other;
-  - **violet** — waiting on a condition variable (inside `await()`).
-- The **markers** are the events (request/acquire/release lock, `await`
-  enter/return, `signal`, marks). The legend at the top identifies each glyph.
-- The **arrows** are causality relations between *threads*:
-  - **dashed gray** — lock *handoff*: the release by one *thread* "hands off"
-    the lock to the acquisition by another;
-  - **pink** — `signal()`/`signalAll()` → the return from the `await()` that
-    woke up.
-- Each event has its **Lamport clock** (L…). Hovering over an event highlights
-  its entire **causal past**, and the *tooltip* shows how the clock was updated
-  (`max(local, cause) + 1`).
-
-Useful buttons:
-- **Axis: Physical time / Lamport clock.** In physical time you see the actual
-  duration of blocking and idle intervals; in Lamport clock you see the causal
-  order compactly. Switching between the two is a good exercise.
-- Toggle each arrow type, the clocks and the marks; and the vertical zoom.
-
----
-
-## Read/write locks (`ReadWriteLock`)
-
-Supported on **both** paths, with the same model. The key point is that
-`readLock()` and `writeLock()` return **two different objects** — if they were
-treated as two independent locks, the exclusion between readers and writers
-would be completely invisible (not a single arrow to explain why the writer was
-blocked). So the two views are recorded as **views of the same lock**: they
-share the **name** and are distinguished by their **mode** (`READ` = shared,
-`WRITE` = exclusive).
-
-**Agent path:** nothing to do — `new ReentrantReadWriteLock()` is instrumented
-as is, and the name comes from the field (e.g. `rw`).
-
-**Wrappers path:**
+Write plain `java.util.concurrent.locks` code — nothing from this project:
 
 ```java
-TracedReadWriteLock rw = new TracedReadWriteLock("data");
-rw.readLock().lock();      // shared ownership
-rw.writeLock().lock();     // exclusive ownership
+private final Lock lock = new ReentrantLock();
+private final Condition notFull = lock.newCondition();
+private final Condition notEmpty = lock.newCondition();
+
+void produce(int value) throws InterruptedException {
+    lock.lock();
+    try {
+        while (buf.size() == CAPACITY) notFull.await();
+        buf.add(value);
+        notEmpty.signal();
+    } finally {
+        lock.unlock();
+    }
+}
 ```
 
-The `ReadersWritersDemo` / `ReadersWritersRaw` example (the same scenario on
-both paths) puts 3 readers and 2 writers on the same lock. In the diagram you
-can see:
+The agent weaves `lock()`/`unlock()`/`await()`/`signal()`/`signalAll()` calls at
+class-loading time. Lock and condition names come from the field that holds them
+(`lock`, `notFull`, `notEmpty` above) — that's what shows up in the diagram.
 
-- the **three overlapping readers** in the same time window (hatched bands at
-  the same time) — they don't exclude each other;
-- the writer **excluded** while they're there, with an arrow linking it to the
-  exit of the **last** reader;
-- the arrows from the write `unlock()` to **each** reader that entered
-  afterward.
+### Marking your own events
 
-The examples deliberately use a **fair** lock (`fair = true`): with an unfair
-lock, new readers can cut in front of a waiting writer, causing **writer
-starvation** — also interesting to show students, just by swapping `true` for
-`false` and comparing the two diagrams.
+```java
+Tracer.note("produced " + value);
+```
 
-> Note: only the *write lock* supports condition variables.
-> `readLock().newCondition()` throws `UnsupportedOperationException` — that's
-> how Java behaves, and we keep the same behavior.
+Puts an application-level mark on the diagram at that point in time. This is the
+one API call that needs `sdtrace-agent.jar` on the *compile* classpath.
 
----
+### Viewing the diagram
 
-## Event and causality model
+Running the program writes `trace.json` to the working directory (via a
+shutdown hook — in IntelliJ that's the run configuration's working directory).
+Open `viz/spacetime.html` — a single file that works offline, no server needed
+— or the hosted [visualizer](https://fntneves.github.io/java-concurrency-tracer/)
+— and use **Open trace.json…**.
 
-The `Tracer` records all events in a **total order** (global counter, serialized
-recording) and assigns each one:
+| | |
+|---|---|
+| 🟧 amber | blocked, waiting to acquire the lock |
+| 🟩 turquoise (solid) | holding the lock (exclusive) |
+| 🟩 turquoise (hatched) | holding a read lock (shared — can overlap across threads) |
+| 🟪 violet | waiting on a condition (`await()`) |
+| ⋯ dashed grey arrow | lock handoff: one thread's release causes another's acquire |
+| ⋯ pink arrow | `signal()`/`signalAll()` causes the matching `await()` return |
 
-- a **per-thread Lamport clock** (local increment; on "receive" events, does
-  `max(local, sender) + 1`);
-- a **physical instant** (nanos since startup), to position it visually;
-- possibly a **causal edge** to another *thread*.
+Toggle **Physical time / Lamport clock** to switch between actual wall-clock
+duration and causal order; `Ctrl`/`⌘` + wheel (or pinch) zooms the time axis.
+`ReentrantReadWriteLock` is supported the same way — concurrent readers show up
+as overlapping hatched bands on separate threads.
 
-Two families of edges are inferred automatically:
-
-1. **Lock handoff** — when a *thread* acquires the lock, it links to the most
-   recent release event of that lock (either an `unlock()` or the implicit
-   release done by an `await()`), if it was done by another *thread*.
-   With a **`ReadWriteLock`**, the rule splits, because ownership can be
-   shared:
-   - a **writer** (exclusive ownership) only enters once **everyone** has left,
-     so it depends on **all** the releases of the *cohort* that emptied the
-     lock. With 3 readers inside, the writer has **3 incoming edges**, not one;
-   - a **reader** isn't blocked by other readers, so it links **only to the
-     exit of the last writer**. Reader→reader arrows are never drawn: they
-     would be invented causality. The writer→reader edge is the *publication*
-     of the written value, and a single write `unlock()` can generate
-     **several** arrows — one per reader that entered afterward.
-
-   So an event has a **set** of causes (`causes`), not just one. The Lamport
-   clock takes the `max` over **all** of them: `L = max(local, c1, c2, …) + 1`.
-   This isn't cosmetic — sticking with just the last recorded release
-   **violates Lamport's condition** whenever a reader that left earlier has a
-   higher clock than the last one to leave (easy to construct: just have a
-   reader that did more work before entering). The trace still carries the
-   `cause` field too (the first cause) for compatibility.
-2. **`signal` → `await`** — each `signal()` wakes the first one waiting (FIFO
-   queue per condition); `signalAll()` wakes all of them. It links to the
-   return of the corresponding `await()`.
-3. **Thread lifecycle** — `start()` → the child's first breath, and the
-   child's end → the `join()` that returns. Unlike (2), these are **exact**
-   happens-before edges: a thread's first instruction genuinely cannot precede
-   its creator's `start()` call, and `join()` genuinely cannot return before
-   the joined thread is done — there's no approximation or JVM-scheduling
-   assumption involved, unlike the FIFO signal/await pairing above.
-
-### Honest limitations (worth discussing with students)
-
-- The `signal`→`await` pairing is **FIFO and approximate**: Java doesn't
-  guarantee which *thread* wakes up, nor does it model *spurious wakeups*. With
-  the correct pattern `while (condition) cond.await();`, the program's logic
-  stays correct; the arrow is a plausible reading of causality, not a JVM
-  guarantee.
-- Recording is serialized through a single monitor — it introduces a small
-  amount of synchronization and a slight **observation effect** on timing. The
-  physical time axis is therefore approximate (great for seeing blocking, not
-  for micro-*benchmarks*).
-- Reentrancy on the same lock shows up as a new request/acquire pair.
-- Thread lifecycle tracing (agent path only) covers `start()`/`join()` with no
-  arguments — the timed `join(long)` isn't instrumented. A thread's `run()`
-  gets a `THREAD_END` automatically only if it returns normally; a thread that
-  dies from an uncaught exception leaves its lane open-ended. `start()`/`join()`
-  call sites are matched **by method name**, not by static type (a subclass of
-  `Thread` compiles `w.start()` without `java.lang.Thread` as the owner), so an
-  unrelated method that happens to be named `start()`/`join()`/`run()` on some
-  other type gets one harmless, no-op `Hooks` call — it's filtered out at
-  runtime by an `instanceof Thread`/`Runnable` check, never shown in the
-  diagram.
-
----
-
-## Compiling and running the example
-
-Recommended (agent path, JDK 24+): see *"What students do"* above, or simply:
+### Running the bundled demo
 
 ```bash
-./build-agent.sh demo/BoundedBufferRaw.java BoundedBufferRaw
+./run-demo.sh                                          # demo/BoundedBufferRaw
+./run-demo.sh demo/HandoffRaw.java HandoffRaw           # the run pictured above
+./run-demo.sh demo/ReadersWritersRaw.java ReadersWritersRaw
 ```
 
-Fallback (wrappers path, JDK 21+):
+Builds the jar, runs the given demo class with the agent attached, and
+re-embeds the resulting trace into `viz/spacetime.html` — which rewrites that
+committed file. Undo with `git checkout -- viz/spacetime.html`.
 
-```bash
-# from the project root
-mkdir -p out
-javac -g -encoding UTF-8 -d out src/pt/sd/trace/*.java demo/BoundedBufferDemo.java
-java -cp out BoundedBufferDemo      # generates trace.json
-# then: open viz/spacetime.html and load trace.json
-```
+## Known limitations
 
-Or use the shortcut:
-
-```bash
-./build.sh demo/BoundedBufferDemo.java BoundedBufferDemo
-```
-
----
-
-## Structure
-
-```
-src/pt/sd/trace/
-  Tracer.java              core: events, Lamport clocks, causality, JSON
-  TracedLock.java          instrumented Lock (wrappers path)
-  TracedCondition.java     instrumented Condition
-  TracedReadWriteLock.java instrumented ReadWriteLock (read/write views)
-  Hooks.java               entry points called by the injected bytecode (agent path)
-  agent/
-    Agent.java             premain: registers the transformer (-javaagent)
-    LockWeaver.java        bytecode rewriting with the Class-File API (JDK 24+)
-demo/
-  BoundedBufferDemo.java   producer/consumer — wrappers path
-  BoundedBufferRaw.java    the same — agent path
-  ReadersWritersDemo.java  readers/writers — wrappers path
-  ReadersWritersRaw.java   the same — agent path
-viz/
-  spacetime.html           standalone visualizer (with an example already embedded)
-  template.html            the same, with a marker to inject another trace
-  core.js                  processing logic, isolated and testable in node
-docs/
-  STUDENT-GUIDE.md         usage guide, to hand out to students
-build.sh                   wrappers path: compiles, runs, and injects the trace (JDK 21+)
-build-agent.sh             agent path: compiles, packages, and runs with -javaagent (JDK 24+)
-sdtrace-agent.jar          ready-to-use artifact (library AND agent in the same file)
-```
-
-### Versioned artifacts
-
-Two generated files are intentionally kept under version control, so students
-can use them without compiling anything:
-
-- `sdtrace-agent.jar` — the *runtime* is compiled with `--release 21` and the
-  agent with `--release 24`, so **the same file serves both paths**: as a
-  library on JDK 21+, and as an agent on JDK 24+.
-- `viz/spacetime.html` — visualizer with an embedded example, to open with no
-  prior steps.
-
-As a consequence, running `build.sh` or `build-agent.sh` **modifies these two
-files** (the JAR is recompiled and the new *trace* is injected into the
-visualizer). To discard those local changes: `git checkout -- sdtrace-agent.jar
-viz/spacetime.html`.
-
----
-
-## Extension ideas for classes
-
-- **`synchronized` / `wait` / `notify`**: provide a `Monitor` that wraps an
-  object with instrumented `enter()/exit()/await()/notifyOne()`, so students can
-  compare the two styles on the same diagram.
-- **Deadlock**: with two named locks and acquisition in opposite orders, the
-  diagram shows two *threads* permanently in amber (blocked) — an immediate
-  visualization of the deadlock.
-- **Exercise**: give students a trace and ask them to reconstruct the Lamport
-  order and identify concurrent events (with no causal relation) — the Lamport
-  axis button serves as the answer key.
-- **Export** the SVG for slides (the diagram is pure SVG in the DOM).
+- Requires **JDK 24+** (`java.lang.classfile` is final in JDK 24).
+- Only `java.util.concurrent.locks.*` is instrumented — `synchronized`,
+  `wait()`/`notify()`, `tryLock()`, and the timed `await` variants are not.
+- `signal()` → `await()` pairing is **FIFO and approximate**: Java doesn't
+  guarantee wakeup order, and spurious wakeups aren't modeled.
+- Thread lifecycle tracing covers no-arg `start()`/`join()` only; `join(long)`
+  isn't woven, and a thread that dies from an uncaught exception leaves its
+  lane open-ended.
+- Lock/condition names come from **fields** reliably; **local variables** need
+  `-g` (most IDEs and build tools already compile with it) or they fall back to
+  `Type@Class:line`.
+- Recording is serialized through a single monitor, which introduces a small
+  observation effect — good for seeing blocking patterns, not for
+  micro-benchmarks.
+- Reentrant acquisition of the same lock shows up as a new request/acquire
+  pair, not as nesting.
