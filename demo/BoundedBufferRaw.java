@@ -8,8 +8,9 @@ import pt.sd.trace.Tracer;
 
 /**
  * Producer/consumer with a bounded buffer, written with the standard lock API
- * — NO TracedLock, NO names passed by hand. The only "tracing" thing here is
- * the optional {@link Tracer#note} call (which students could even omit).
+ * — no manual instrumentation, no names passed by hand. The only "tracing"
+ * thing here is the optional {@link Tracer#note} call (which students could
+ * even omit).
  *
  * All the lock/await/signal instrumentation is injected by the agent at class
  * load time. Run with:

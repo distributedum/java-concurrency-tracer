@@ -114,7 +114,7 @@ public final class Tracer {
         }));
     }
 
-    // ---- Internal API used by TracedLock / TracedCondition ------------------
+    // ---- Internal API used by Hooks (agent-injected calls) -------------------
 
     void lockRequest(String lock)   { lockRequest(lock, EXCLUSIVE); }
     void lockAcquired(String lock)  { lockAcquired(lock, EXCLUSIVE); }

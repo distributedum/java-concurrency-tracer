@@ -7,8 +7,8 @@ import pt.sd.trace.Tracer;
 /**
  * The smallest possible causal chain: one thread waits on a condition, another
  * sets the flag and signals it, and main joins both. Written with the standard
- * lock API — no {@code TracedLock}, no names passed by hand; the agent infers
- * {@code lock} and {@code ready} from the field names.
+ * lock API — no manual instrumentation, no names passed by hand; the agent
+ * infers {@code lock} and {@code ready} from the field names.
  *
  * {@code Signaler} sleeps briefly before signalling so {@code Waiter} is
  * provably parked inside {@code await()} first — this is what makes the

@@ -19,9 +19,8 @@ import java.util.Map;
 
 /**
  * Rewrites student classes' bytecode to transparently instrument the use of
- * {@code java.util.concurrent.locks.Lock} and {@code Condition} — without
- * them having to swap {@code ReentrantLock} for {@code TracedLock} or pass
- * names by hand.
+ * {@code java.util.concurrent.locks.Lock} and {@code Condition} — without any
+ * code changes on their part, and without them passing names by hand.
  *
  * Uses the standard Class-File API ({@code java.lang.classfile}, final in
  * JDK 24), so there are no external dependencies.

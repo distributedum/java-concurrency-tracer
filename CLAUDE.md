@@ -11,28 +11,19 @@ diagram of the execution: who blocked on what, who signaled whom, per-thread sta
 over time, and happens-before edges. No external dependencies — just the JDK to run
 and a browser to view `viz/spacetime.html`.
 
-There are two independent ways to instrument student code, both producing the same
-`trace.json` format consumed by the visualizer. The **agent is the documented
-default** (no code changes); the **wrappers are the fallback** for students stuck
-on JDK 21–23:
-
-1. **Java agent** (`-javaagent:sdtrace-agent.jar`) — bytecode weaving via
-   `java.lang.classfile` (final in JDK 24+), so students don't touch their code at
-   all. Requires JDK 24+.
-2. **Wrappers** (`TracedLock`, `TracedCondition`, `TracedReadWriteLock`) — students
-   swap `ReentrantLock`/`ReentrantReadWriteLock` for the traced equivalents, which
-   implement the same `Lock`/`Condition`/`ReadWriteLock` interfaces. Works on any
-   JDK (compiled with `--release 21`).
-
-Both paths funnel into the same `pt.sd.trace.Tracer` singleton, which is the single
-source of truth for event ordering, Lamport clocks, and causal edges.
+Instrumentation happens via a **Java agent** (`-javaagent:sdtrace-agent.jar`) —
+bytecode weaving via `java.lang.classfile` (final in JDK 24+), so students don't
+touch their code at all. Requires JDK 24+ throughout; there is no fallback for
+older JDKs. The agent funnels everything into the same `pt.sd.trace.Tracer`
+singleton, which is the single source of truth for event ordering, Lamport
+clocks, and causal edges.
 
 ## Build & run commands
 
 ```bash
 ./build.sh
-# compiles runtime with --release 21, agent classes with --release 24, packages
-# both into sdtrace-agent.jar. Touches only the jar.
+# compiles runtime + agent classes together with --release 24, packages into
+# sdtrace-agent.jar. Touches only the jar.
 
 ./run-demo.sh demo/BoundedBufferRaw.java BoundedBufferRaw
 # (args optional, default to the line above) builds the jar, compiles the demo
@@ -81,21 +72,19 @@ trace. To discard those local changes:
        thread, updated on every `emit`). Unlike (2), both are **exact**
        happens-before edges, not an approximation.
   - Writes JSON manually (no external libs) via `toJson()`/`str()`.
-- **`TracedLock.java`** / **`TracedCondition.java`** / **`TracedReadWriteLock.java`** —
-  thin wrappers implementing the standard `java.util.concurrent.locks` interfaces,
-  delegating to a real `ReentrantLock`/`ReentrantReadWriteLock` and calling into
-  `Tracer` around `lock()`/`unlock()`/`await()`/`signal()`. `TracedReadWriteLock`'s
-  read and write views share the same lock **name** but differ by **mode**
-  (`READ`/`WRITE`) — this is what lets the tracer correctly model reader/writer
-  exclusion (see cohort logic above).
-- **`Hooks.java`** — static entry points called by agent-woven bytecode (mirrors the
-  wrapper API but for code that wasn't touched by hand). Thread-lifecycle entry
-  points (`onThreadStart`, `onJoinBegin`, `onJoinEnd`) each guard on
-  `instanceof Thread` and no-op otherwise, since `LockWeaver` matches
-  `start()`/`join()` call sites by method name alone (see below) — this guard is
-  what makes that safe. `onRunBegin`/`onRunEnd` have no receiver to guard on;
-  safety there comes from `LockWeaver` only weaving `run()` on classes that are
-  themselves shaped like a `Thread`/`Runnable` (see below).
+- **`Hooks.java`** — static entry points called by agent-woven bytecode; the sole
+  source of lock/condition/thread-lifecycle events, since there's no other
+  instrumentation path. Resolves each lock/condition's readable name and, for a
+  `ReadWriteLock`'s read/write views, links them to their parent lock so the two
+  views share the same lock **name** but differ by **mode** (`READ`/`WRITE`) —
+  this is what lets the tracer correctly model reader/writer exclusion (see
+  cohort logic above). Thread-lifecycle entry points (`onThreadStart`,
+  `onJoinBegin`, `onJoinEnd`) each guard on `instanceof Thread` and no-op
+  otherwise, since `LockWeaver` matches `start()`/`join()` call sites by method
+  name alone (see below) — this guard is what makes that safe. `onRunBegin`/
+  `onRunEnd` have no receiver to guard on; safety there comes from `LockWeaver`
+  only weaving `run()` on classes that are themselves shaped like a
+  `Thread`/`Runnable` (see below).
 
 ### Agent (`src/pt/sd/trace/agent/`)
 
@@ -121,9 +110,9 @@ trace. To discard those local changes:
   `THREAD_END` automatic and no longer requires a manual `Tracer.threadDone()`
   call, for classes shaped that way.
 
-Because `sdtrace-agent.jar`'s runtime classes are compiled with `--release 21` and
-its agent classes with `--release 24`, the single jar works both as a library
-(JDK 21+) and as a `-javaagent` (JDK 24+).
+`sdtrace-agent.jar`'s runtime and agent classes are compiled together with
+`--release 24`; the jar only serves as a `-javaagent` (JDK 24+ required
+throughout, no older-JDK fallback).
 
 ### Visualizer (`viz/`)
 
@@ -136,8 +125,8 @@ its agent classes with `--release 24`, the single jar works both as a library
 - **`template.html`** — the viewer shell with a `/*__TRACE__*/ ... /*__END__*/`
   marker where build scripts inject a trace.
 - **`spacetime.html`** — `template.html` with a trace already embedded, committed so
-  it opens standalone with a working example; also the file both build scripts
-  overwrite with the newly generated trace.
+  it opens standalone with a working example; also the file `run-demo.sh`
+  overwrites with the newly generated trace.
 
 ### Event kinds
 
