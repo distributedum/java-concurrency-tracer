@@ -1,12 +1,12 @@
-# java-concurrency-tracer
-
-![Space-time diagram of a single wait/signal handoff, on the Lamport-clock axis](assets/screenshot.png)
+# ThreadLens - A Java Tool for Visualizing Multi-Threaded Executions
 
 A Java agent that lets you see causality in concurrent programs. Point it at any
 program that uses locks and condition variables and you'll get a space-time diagram
 of what actually happened: who blocked on which lock, who waited on which
 condition, who signalled whom, and which events really happened before which, 
 annotated with Lamport clocks. Your own code stays exactly as it is.
+
+![Space-time diagram of a single wait/signal handoff, on the Lamport-clock axis](assets/screenshot.png "=350px")
 
 ## Setup
 
