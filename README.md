@@ -1,4 +1,4 @@
-# ThreadLens - A Java Tool for Visualizing Multi-Threaded Executions
+# ThreadLens - Visualizing Multi-Threaded Executions
 
 A Java agent that lets you see causality in concurrent programs. Point it at any
 program that uses locks and condition variables and you'll get a space-time diagram
