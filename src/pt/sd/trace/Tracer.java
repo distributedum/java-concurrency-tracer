@@ -7,8 +7,10 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Centralized tracer for instrumenting concurrent executions with locks and
@@ -23,11 +25,13 @@ import java.util.Map;
  *     the diagram's arrows and to merge the Lamport clock.
  *
  * Three families of causal edges are inferred:
- *   1. Lock HANDOFF: when a thread acquires a lock, it links to the most
- *      recent release event (RELEASE or AWAIT_BEGIN) of that lock, if it was
- *      done by another thread.
- *   2. SIGNAL -> WAKEUP: a signal()/signalAll() on a condition links to the
- *      return of the await() of the waiting thread(s) (FIFO pairing).
+ *   1. Lock HANDOFF: when a thread acquires a lock, it links to the release
+ *      event(s) that emptied that lock. await() is modeled explicitly:
+ *      AWAIT_BEGIN, LOCK_RELEASED ... LOCK_REQUEST, LOCK_ACQUIRED, AWAIT_WAKEUP,
+ *      so the reacquisition is a normal handoff too.
+ *   2. SIGNAL -> LOCK_REQUEST: a signal()/signalAll() on a condition links to the
+ *      lock request of the waiting thread(s) it wakes (FIFO pairing); from then
+ *      on they compete for the lock.
  *   3. Thread lifecycle: START -> BEGIN (a thread's first event links back to
  *      its creator's start() call) and END -> JOIN (a join() that returns
  *      links to the joined thread's last event). Unlike (2), these are exact
@@ -97,8 +101,11 @@ public final class Tracer {
     private final Map<String, List<Event>> lastCohortByLock = new HashMap<>();
     // FIFO queue of waiting threads, per condition (AWAIT_BEGIN event).
     private final Map<String, Deque<Event>> waitersByCond = new HashMap<>();
-    // Pending signal that will wake up a thread: tid -> SIGNAL/SIGNAL_ALL event.
-    private final Map<Long, Event> pendingWakeup = new HashMap<>();
+    // Threads already signaled: the signal registered their LOCK_REQUEST (they now
+    // compete to reacquire the lock), so awaitWakeup() must not emit another one.
+    private final Set<Long> signaledTids = new HashSet<>();
+    // Reentrancy depth a thread held when it entered await(), restored on wakeup.
+    private final Map<Long, Integer> awaitDepthByTid = new HashMap<>();
     // Pending start() call, keyed by the CHILD's tid (known before start(), since
     // Thread.threadId() is assigned at construction). Consumed by the child's
     // first event (THREAD_BEGIN), which links back to it.
@@ -125,8 +132,36 @@ public final class Tracer {
     void lockRequest(String lock, String mode)   { emit("LOCK_REQUEST",  lock, null, null, mode); }
     void lockAcquired(String lock, String mode)  { emit("LOCK_ACQUIRED", lock, null, null, mode); }
     void lockReleased(String lock, String mode)  { emit("LOCK_RELEASED", lock, null, null, mode); }
-    void awaitBegin(String lock, String cond, String mode)  { emit("AWAIT_BEGIN",  lock, cond, null, mode); }
-    void awaitWakeup(String lock, String cond, String mode) { emit("AWAIT_WAKEUP", lock, cond, null, mode); }
+
+    /**
+     * await() enters the wait: AWAIT_BEGIN, then the lock is FULLY released
+     * (LOCK_RELEASED, all reentrancy levels). Both are recorded atomically.
+     */
+    synchronized void awaitBegin(String lock, String cond, String mode) {
+        long tid = Thread.currentThread().threadId();
+        Map<Long, Integer> holders = holdersByLock.computeIfAbsent(lock, k -> new HashMap<>());
+        int depth = holders.getOrDefault(tid, 1);
+        awaitDepthByTid.put(tid, depth);
+        holders.put(tid, 1);                       // the release below drops it entirely
+        emit("AWAIT_BEGIN",   lock, cond, null, mode);
+        emit("LOCK_RELEASED", lock, null, "await()", mode);
+    }
+
+    /**
+     * await() returns: the thread competes for the lock (LOCK_REQUEST, normally
+     * already recorded at signal time), reacquires it (LOCK_ACQUIRED) and only
+     * then does AWAIT_WAKEUP mark the return of await().
+     */
+    synchronized void awaitWakeup(String lock, String cond, String mode) {
+        long tid = Thread.currentThread().threadId();
+        if (!signaledTids.remove(tid)) {          // no matching signal seen (spurious wakeup)
+            emit("LOCK_REQUEST", lock, cond, "await() woken", mode);
+        }
+        emit("LOCK_ACQUIRED", lock, null, "await() reacquires", mode);
+        Integer depth = awaitDepthByTid.remove(tid);
+        if (depth != null && depth > 1) holdersByLock.get(lock).put(tid, depth);
+        emit("AWAIT_WAKEUP", lock, cond, null, mode);
+    }
 
     void signal(String cond)     { emit("SIGNAL",     null, cond, null, null); }
     void signalAll(String cond)  { emit("SIGNAL_ALL", null, cond, null, null); }
@@ -165,7 +200,8 @@ public final class Tracer {
         INSTANCE.pendingReleasesByLock.clear();
         INSTANCE.lastCohortByLock.clear();
         INSTANCE.waitersByCond.clear();
-        INSTANCE.pendingWakeup.clear();
+        INSTANCE.signaledTids.clear();
+        INSTANCE.awaitDepthByTid.clear();
         INSTANCE.pendingStartByTid.clear();
         INSTANCE.lastEventByTid.clear();
         INSTANCE.nextSeq = 0L;
@@ -179,13 +215,18 @@ public final class Tracer {
 
     private synchronized Event emit(String kind, String lock, String cond, String detail, String mode, long targetTid) {
         Thread th = Thread.currentThread();
-        long tid = th.threadId();
-        String tname = th.getName();
+        return record(th.threadId(), th.getName(), kind, lock, cond, detail, mode, targetTid, null);
+    }
+
+    /** Records an event on behalf of thread {@code tid} (not necessarily the caller). */
+    private Event record(long tid, String tname, String kind, String lock, String cond,
+                         String detail, String mode, long targetTid, Event forcedCause) {
         long tNanos = System.nanoTime() - t0;
         long seq = nextSeq++;
 
         // Determine the causal edges (there can be SEVERAL).
         List<Event> causes = new ArrayList<>();
+        if (forcedCause != null) causes.add(forcedCause);
         if ("LOCK_ACQUIRED".equals(kind)) {
             if (shared(mode)) {
                 // READER: not blocked by other readers. Its only dependency is
@@ -204,9 +245,6 @@ public final class Tracer {
                     for (Event r : cohort) if (r.tid != tid) causes.add(r);
                 }
             }
-        } else if ("AWAIT_WAKEUP".equals(kind)) {
-            Event sig = pendingWakeup.remove(tid);
-            if (sig != null) causes.add(sig);
         } else if ("THREAD_BEGIN".equals(kind)) {
             // Exact edge: this thread's first breath happens-after its creator's
             // start() call. Not an approximation, unlike signal->await.
@@ -233,21 +271,17 @@ public final class Tracer {
 
         // Downstream effects on shared state.
         switch (kind) {
-            case "LOCK_ACQUIRED", "AWAIT_WAKEUP" -> {
-                // Becomes a holder of the lock (the await returns by reacquiring it).
+            case "LOCK_ACQUIRED" -> {
+                // Becomes a holder of the lock.
                 holdersByLock.computeIfAbsent(lock, k -> new HashMap<>())
                              .merge(tid, 1, Integer::sum);
             }
-            case "LOCK_RELEASED", "AWAIT_BEGIN" -> {
+            case "LOCK_RELEASED" -> {
                 if (!shared(mode)) lastExclusiveReleaseByLock.put(lock, e);
 
                 Map<Long, Integer> holders = holdersByLock.computeIfAbsent(lock, k -> new HashMap<>());
-                if ("AWAIT_BEGIN".equals(kind)) {
-                    holders.remove(tid);              // the await fully releases the lock
-                } else {
-                    Integer d = holders.get(tid);     // unlock: goes down one reentrancy level
-                    if (d == null || d <= 1) holders.remove(tid); else holders.put(tid, d - 1);
-                }
+                Integer d = holders.get(tid);         // unlock: goes down one reentrancy level
+                if (d == null || d <= 1) holders.remove(tid); else holders.put(tid, d - 1);
 
                 List<Event> pend = pendingReleasesByLock.computeIfAbsent(lock, k -> new ArrayList<>());
                 pend.add(e);
@@ -260,24 +294,26 @@ public final class Tracer {
             }
             case "THREAD_START" -> pendingStartByTid.put(targetTid, e);
         }
+        events.add(e);
+        lastEventByTid.put(tid, e);
+
+        // Condition bookkeeping. Done after events.add(e) so that the LOCK_REQUESTs
+        // recorded on behalf of the woken threads get later seqs than the signal.
         if ("AWAIT_BEGIN".equals(kind)) {
             waitersByCond.computeIfAbsent(cond, k -> new ArrayDeque<>()).addLast(e);
-        } else if ("SIGNAL".equals(kind)) {
-            Deque<Event> q = waitersByCond.get(cond);
-            if (q != null) {
-                Event w = q.pollFirst();
-                if (w != null) pendingWakeup.put(w.tid, e);
-            }
-        } else if ("SIGNAL_ALL".equals(kind)) {
+        } else if ("SIGNAL".equals(kind) || "SIGNAL_ALL".equals(kind)) {
             Deque<Event> q = waitersByCond.get(cond);
             if (q != null) {
                 Event w;
-                while ((w = q.pollFirst()) != null) pendingWakeup.put(w.tid, e);
+                while ((w = q.pollFirst()) != null) {
+                    // The woken thread moves from the condition queue to the lock
+                    // queue NOW: it is a lock request caused by this signal.
+                    signaledTids.add(w.tid);
+                    record(w.tid, w.thread, "LOCK_REQUEST", w.lock, cond, "woken by signal", w.mode, -1L, e);
+                    if ("SIGNAL".equals(kind)) break;
+                }
             }
         }
-
-        events.add(e);
-        lastEventByTid.put(tid, e);
         return e;
     }
 

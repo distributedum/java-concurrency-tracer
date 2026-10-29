@@ -239,7 +239,8 @@ function stateSegments(events, axisKey){
         case "LOCK_ACQUIRED": push(at); state=(e.mode==="READ")?STATE.HOLDING_SHARED:STATE.HOLDING; break;
         case "AWAIT_BEGIN":   push(at); state=STATE.WAITING; break;
         case "AWAIT_WAKEUP":  push(at); state=STATE.HOLDING; break;
-        case "LOCK_RELEASED": push(at); state=STATE.RUNNING; break;
+        // A release inside await() (state WAITING) keeps the thread waiting.
+        case "LOCK_RELEASED": push(at); if(state!==STATE.WAITING) state=STATE.RUNNING; break;
         case "JOIN_BEGIN":    push(at); state=STATE.JOINING; break;
         case "THREAD_JOIN":   push(at); state=STATE.RUNNING; break;
         case "THREAD_BEGIN":  push(at); state=STATE.RUNNING; break;
@@ -260,7 +261,7 @@ function axisRange(events, axisKey){
 /* ===== Readable labels ===== */
 const KIND_LABEL = {
   LOCK_REQUEST:"Lock request", LOCK_ACQUIRED:"Lock acquired", LOCK_RELEASED:"Lock released",
-  AWAIT_BEGIN:"await() — enters wait", AWAIT_WAKEUP:"await() returns — reacquires the lock",
+  AWAIT_BEGIN:"await() — waits on the condition", AWAIT_WAKEUP:"await() returns",
   SIGNAL:"signal()", SIGNAL_ALL:"signalAll()", NOTE:"Application mark", THREAD_END:"Thread end",
   THREAD_START:"start()", THREAD_BEGIN:"Thread begins (run() entry)",
   JOIN_BEGIN:"join() — blocks", THREAD_JOIN:"join() returns"
@@ -423,12 +424,12 @@ function render(){
   // causal arrows
   const gEdges=el("g");
   for(const e of events){
-    const isSignal = e.kind==="AWAIT_WAKEUP";
-    if(isSignal && !showSignal) continue;
-    if(!isSignal && !showHandoff) continue;
     for(const cs of causesOf(e)){            // one arrow PER CAUSE
       const src=idx.get(cs);
       if(!src) continue;
+      const isSignal = isSignalEdge(src);    // classified by the ORIGIN of the edge
+      if(isSignal && !showSignal) continue;
+      if(!isSignal && !showHandoff) continue;
       const x1=laneX(src.thread), y1=y(src[axisKey]);
       const x2=laneX(e.thread),  y2=y(e[axisKey]);
       const k=Math.sign(x2-x1)*Math.min(64,Math.abs(x2-x1)/2+18);
@@ -529,6 +530,7 @@ function render(){
 /* ===== Interaction: tooltip + causal-past highlighting ===== */
 // An event can have SEVERAL causes (e.g. a writer waits for ALL readers to
 // leave -> one edge per reader). Also accepts older traces with a single "cause".
+function isSignalEdge(src){ return src.kind==="SIGNAL" || src.kind==="SIGNAL_ALL"; }
 function causesOf(e){
   if(Array.isArray(e.causes)) return e.causes;
   return (e.cause!=null) ? [e.cause] : [];
@@ -613,7 +615,7 @@ function showTip(e, ev, isPinned){
   if(e.detail) html += `<div class="row">${e.detail}</div>`;
   html += `<div class="lamx">Lamport clock = <b>${e.lamport}</b></div>`;
   if(cs.length){
-    const label = e.kind==="AWAIT_WAKEUP" ? "woken by"
+    const label = (e.kind==="LOCK_REQUEST" && cs.some(isSignalEdge)) ? "woken by — competes to reacquire the lock"
                 : e.kind==="THREAD_BEGIN" ? "started by"
                 : e.kind==="THREAD_JOIN"  ? "after"
                 : (cs.length>1 ? "only entered after ALL had left" : "after release by");
@@ -635,8 +637,9 @@ function moveTip(ev){
 /* ===== Stats + glyph legend ===== */
 function buildStats(){
   const c=k=>events.filter(e=>e.kind===k).length;
+  const all=events.flatMap(e=>causesOf(e).map(c=>idx.get(c)).filter(Boolean));
   const handoffs=events.filter(e=>e.kind==="LOCK_ACQUIRED").reduce((n,e)=>n+causesOf(e).length,0);
-  const sig=events.filter(e=>e.kind==="AWAIT_WAKEUP").reduce((n,e)=>n+causesOf(e).length,0);
+  const sig=all.filter(isSignalEdge).length;
   document.getElementById("stats").innerHTML =
     `<div class="stat"><b class="mono">${threads.length}</b>threads</div>`
    +`<div class="stat"><b class="mono">${events.length}</b>events</div>`

@@ -51,7 +51,8 @@ function stateSegments(events, axisKey) {
         case "LOCK_ACQUIRED": push(at); state = (e.mode === "READ") ? STATE.HOLDING_SHARED : STATE.HOLDING; break;
         case "AWAIT_BEGIN":   push(at); state = STATE.WAITING; break;
         case "AWAIT_WAKEUP":  push(at); state = STATE.HOLDING; break;
-        case "LOCK_RELEASED": push(at); state = STATE.RUNNING; break;
+        // A release inside await() (state WAITING) keeps the thread waiting.
+        case "LOCK_RELEASED": push(at); if (state !== STATE.WAITING) state = STATE.RUNNING; break;
         case "JOIN_BEGIN":    push(at); state = STATE.JOINING; break;
         case "THREAD_JOIN":   push(at); state = STATE.RUNNING; break;
         case "THREAD_BEGIN":  push(at); state = STATE.RUNNING; break;

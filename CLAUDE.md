@@ -62,9 +62,14 @@ trace. To discard those local changes:
        holding it, not just the most recent one. This is required to keep Lamport's
        clock condition correct — using only the last recorded release can produce a
        clock that isn't a valid upper bound.
-    2. **signal → await**: FIFO pairing per condition variable (`waitersByCond`
-       deque, `pendingWakeup` map). This is an approximation — Java doesn't guarantee
-       wakeup order or rule out spurious wakeups — documented as such.
+    2. **signal → lock request**: FIFO pairing per condition variable
+       (`waitersByCond`, `signaledTids`). `await()` is modeled explicitly:
+       `AWAIT_BEGIN` → `LOCK_RELEASED` (all reentrancy levels, saved in
+       `awaitDepthByTid`) … then, at the signal, a `LOCK_REQUEST` recorded *on
+       behalf of* the woken thread (cause: the signal), and on return
+       `LOCK_ACQUIRED` (ordinary cohort handoff) → `AWAIT_WAKEUP`. So a
+       signalAll shows a ladder of handoffs, not simultaneous re-entry. FIFO
+       pairing is an approximation — documented as such.
     3. **Thread lifecycle**: `start()` → the started thread's first event
        (`pendingStartByTid`, keyed by the *child's* tid — known before `start()`
        since `Thread.threadId()` is assigned at construction) and the joined
@@ -135,7 +140,7 @@ throughout, no older-JDK fallback).
 
 ### Event kinds
 
-`LOCK_REQUEST`, `LOCK_ACQUIRED`, `LOCK_RELEASED`, `AWAIT_BEGIN`, `AWAIT_WAKEUP`,
+`LOCK_REQUEST`, `LOCK_ACQUIRED`, `LOCK_RELEASED`, `AWAIT_BEGIN`, `AWAIT_WAKEUP` (await() returns, after the reacquire),
 `SIGNAL`, `SIGNAL_ALL`, `NOTE` (student-triggered via `Tracer.note(...)`),
 `THREAD_START` (parent, at `start()`), `THREAD_BEGIN` (child, at `run()` entry —
 exact cause: the matching `THREAD_START`), `JOIN_BEGIN` (parent, at `join()`),
