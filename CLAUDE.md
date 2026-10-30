@@ -124,7 +124,8 @@ throughout, no older-JDK fallback).
 - **`core.js`** — pure trace-processing logic, no DOM dependency, `module.exports`ed
   for reuse/testing under Node. Computes per-thread state segments (`RUNNING`,
   `HOLDING`, `HOLDING_SHARED`, `BLOCKED`, `WAITING`, `JOINING`, `TERMINATED`) from
-  the event stream, keyed on either the physical (`t`) or Lamport (`lamport`) axis.
+  the event stream, keyed on either the physical (`t`) or Lamport (`lamport`) axis (the viewer
+  uses Lamport; physical time is only shown in tooltips, with no UI switch).
   **Duplicated** (by design, so the viewer has no build step) as an inline copy in
   `template.html` — the two must be kept in sync by hand.
 - **`template.html`** — the viewer shell with a `/*__TRACE__*/ ... /*__END__*/`

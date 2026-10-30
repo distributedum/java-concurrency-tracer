@@ -181,12 +181,7 @@
 </header>
 
 <div class="controls">
-  <span class="ctl-label">Axis</span>
-  <span class="seg" id="axisSeg">
-    <button data-axis="t" class="on">Physical time</button>
-    <button data-axis="lamport">Lamport clock</button>
-  </span>
-  <span class="ctl-label" style="margin-left:6px">Arrows</span>
+  <span class="ctl-label">Arrows</span>
   <label class="toggle"><input type="checkbox" id="tHandoff" checked> lock handoff</label>
   <label class="toggle"><input type="checkbox" id="tSignal" checked> signal → lock request</label>
   <label class="toggle"><input type="checkbox" id="tLam" checked> L clocks</label>
@@ -307,7 +302,9 @@ function loadTrace(obj){
 }
 
 /* ===== UI state ===== */
-let axisKey="t", zoom=1.6, showHandoff=true, showSignal=true, showLam=true, showNotes=true;
+// The vertical axis is the Lamport clock (causal order). Physical time ("t") is
+// still supported by render() and shown in the tooltip, but has no UI switch.
+let axisKey="lamport", zoom=1.6, showHandoff=true, showSignal=true, showLam=true, showNotes=true;
 const FS_STEPS = [1, 1.2, 1.4, 1.7, 2, 2.4];
 let fsIdx = 0;
 try{ const v = +localStorage.getItem("sdtrace-fs"); if(FS_STEPS.includes(v)) fsIdx = FS_STEPS.indexOf(v); }catch(e){}
@@ -757,12 +754,6 @@ document.addEventListener("click", ev=>{
 // Esc also closes it.
 document.addEventListener("keydown", ev=>{ if(ev.key==="Escape") unpin(); });
 
-document.getElementById("axisSeg").addEventListener("click",e=>{
-  const b=e.target.closest("button[data-axis]"); if(!b) return;
-  axisKey=b.dataset.axis;
-  document.querySelectorAll("#axisSeg button").forEach(x=>x.classList.toggle("on",x===b));
-  render();
-});
 document.getElementById("tHandoff").addEventListener("change",e=>{showHandoff=e.target.checked;render();});
 document.getElementById("tSignal").addEventListener("change",e=>{showSignal=e.target.checked;render();});
 document.getElementById("tLam").addEventListener("change",e=>{showLam=e.target.checked;render();});

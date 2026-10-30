@@ -94,8 +94,8 @@ Running the program, the agent produces a `trace.json` file in the working direc
 
 Open the hosted [visualizer](https://distributedum.github.io/java-concurrency-tracer/), and use **Open trace.json…**.
 
-Toggle **Physical time / Lamport clock** to switch between actual wall-clock
-duration and causal order;
+The vertical axis is the Lamport clock (causal order); each event's physical
+time is shown in its tooltip.
 
 ### Running the bundled demo
 
