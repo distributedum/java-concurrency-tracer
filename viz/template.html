@@ -116,10 +116,9 @@
   .scroll{overflow:auto; flex:1; position:relative}
   svg{display:block}
   text{fill:var(--ink); font-family:ui-monospace,"SFMono-Regular",Menlo,monospace}
-  .laneHead{font-size:13px; font-weight:600; letter-spacing:.03em}
-  .laneHeadSub{font-size:10px; fill:var(--faint)}
+  .laneHead{font-size:calc(13px * var(--fs,1)); font-weight:600; letter-spacing:.03em}
   .gridline{stroke:var(--rule-soft); stroke-width:1}
-  .axislabel{fill:var(--faint); font-size:10.5px}
+  .axislabel{fill:var(--faint); font-size:calc(10.5px * var(--fs,1))}
   .lifeline{stroke:var(--lifeline); stroke-width:1.5}
   .band{opacity:.9}
   .band.HOLDING{fill:var(--hold-fill); stroke:var(--hold)}
@@ -129,10 +128,10 @@
   .band.JOINING{fill:var(--join-fill); stroke:var(--join)}
   .band{stroke-width:1; rx:5}
   .awaitBr{fill:none; stroke:var(--wait); stroke-width:2; stroke-linecap:round; stroke-linejoin:round; pointer-events:none}
-  .awaitLbl{fill:var(--wait); font-size:10px; font-weight:600; pointer-events:none}
+  .awaitLbl{fill:var(--wait); font-size:calc(10px * var(--fs,1)); font-weight:600; pointer-events:none}
   .awaitRing{fill:none; stroke:var(--wait); stroke-width:1.4; stroke-dasharray:2 2; pointer-events:none}
-  .lam{fill:var(--muted); font-size:10px}
-  .note-lbl{fill:var(--muted); font-size:10.5px}
+  .lam{fill:var(--muted); font-size:calc(10px * var(--fs,1))}
+  .note-lbl{fill:var(--muted); font-size:calc(10.5px * var(--fs,1))}
   .lam-in{fill:var(--faint)}
   .edge{fill:none; stroke-width:1.4; opacity:.55}
   .edge.handoff{stroke:var(--handoff); stroke-dasharray:3 3}
@@ -156,7 +155,7 @@
   #tip .hint{margin-top:7px; padding-top:6px; border-top:1px solid var(--rule); color:var(--faint); font-size:10.5px}
   #diag .mk{cursor:pointer; pointer-events:auto}
   #diag .edge, #diag .band, #diag .lifeline, #diag .axislabel,
-  #diag .laneHead, #diag .laneHeadSub, #diag .lam, #diag .note-lbl{pointer-events:none}
+  #diag .laneHead, #diag .lam, #diag .note-lbl{pointer-events:none}
   .mk.pinned circle,.mk.pinned rect,.mk.pinned path,.mk.pinned polygon{filter:drop-shadow(0 0 6px currentColor)}
   #tip .row{color:var(--muted)}
   #tip .row b{color:var(--ink); font-weight:600}
@@ -192,6 +191,11 @@
   <label class="toggle"><input type="checkbox" id="tSignal" checked> signal → lock request</label>
   <label class="toggle"><input type="checkbox" id="tLam" checked> L clocks</label>
   <label class="toggle"><input type="checkbox" id="tNotes" checked> marks</label>
+  <span class="ctl-label" style="margin-left:6px">Text</span>
+  <span class="seg compact" id="fsSeg">
+    <button type="button" id="fsDown" title="Smaller text">A−</button>
+    <button type="button" id="fsUp" title="Larger text">A+</button>
+  </span>
   <label class="seg" style="cursor:pointer;margin-left:auto">
     <button type="button" id="openBtn">Open trace.json…</button>
     <input type="file" id="file" accept=".json,application/json" hidden>
@@ -304,6 +308,21 @@ function loadTrace(obj){
 
 /* ===== UI state ===== */
 let axisKey="t", zoom=1.6, showHandoff=true, showSignal=true, showLam=true, showNotes=true;
+const FS_STEPS = [1, 1.2, 1.4, 1.7, 2, 2.4];
+let fsIdx = 0;
+try{ const v = +localStorage.getItem("sdtrace-fs"); if(FS_STEPS.includes(v)) fsIdx = FS_STEPS.indexOf(v); }catch(e){}
+let FS = FS_STEPS[fsIdx];
+const G0 = {gutter:G.gutter, laneW:G.laneW};
+// Text scale: --fs resizes every SVG text; lanes and the axis gutter widen with it
+// so larger notes still fit, and the label layout (below) scales its line metrics.
+function applyFs(){
+  FS = FS_STEPS[fsIdx];
+  document.documentElement.style.setProperty("--fs", FS);
+  G.gutter = Math.round(G0.gutter*FS); G.laneW = Math.round(G0.laneW*FS);
+  const d=document.getElementById("fsDown"), u=document.getElementById("fsUp");
+  if(d) d.disabled = fsIdx===0; if(u) u.disabled = fsIdx===FS_STEPS.length-1;
+}
+applyFs();
 const AX = {lo:0, span:1, plotH:1};   // current axis mapping (for anchored zoom)
 
 const svg = document.getElementById("diag");
@@ -425,9 +444,7 @@ function render(){
   for(const th of threads){
     const cx=laneX(th);
     const info=segMap.get(th);
-    const role = th.startsWith("P") ? "producer" : "consumer";
-    gLanes.appendChild(el("text",{class:"laneHead","text-anchor":"middle",x:cx,y:G.top-30},th));
-    gLanes.appendChild(el("text",{class:"laneHeadSub","text-anchor":"middle",x:cx,y:G.top-16},role));
+    gLanes.appendChild(el("text",{class:"laneHead","text-anchor":"middle",x:cx,y:G.top-22},th));
     // lifeline up to the last event
     const yEnd=y(info.last[axisKey]);
     gLanes.appendChild(el("line",{class:"lifeline",x1:cx,y1:y(info.first[axisKey]),x2:cx,y2:yEnd}));
@@ -494,21 +511,21 @@ function render(){
      reserve space first. If space runs out, the Lamport label yields — its value
      is still available by clicking the event. On the Lamport axis, events spread
      out along the causal order and all fit. */
-  const LINE = 13, MAX_DEVIATION = 30;
+  const LINE = 13*FS, MAX_DEVIATION = 30*FS, PAD = 6*FS;
   const occupied = new Map();            // "column|side" -> occupied [top, bottom] intervals
 
   function reserve(key, yWanted, nLines){
-    const height = LINE*(nLines-1) + 12;
+    const height = LINE*(nLines-1) + 2*PAD;
     const list = occupied.get(key) || [];
     let yy = yWanted, moved = true, guard = 0;
     while(moved && guard++ < 300){
       moved = false;
       for(const [a,b] of list){
-        if(yy - 6 < b && yy - 6 + height > a){ yy = b + 7; moved = true; }
+        if(yy - PAD < b && yy - PAD + height > a){ yy = b + PAD + 1; moved = true; }
       }
     }
     if(yy - yWanted > MAX_DEVIATION) return null;   // would end up next to the wrong marker
-    list.push([yy - 6, yy - 6 + height]);
+    list.push([yy - PAD, yy - PAD + height]);
     list.sort((p,q) => p[0] - q[0]);
     occupied.set(key, list);
     return yy;
@@ -526,7 +543,7 @@ function render(){
       const xDir = cx + G.bandW/2 + 8;
       const key = e.thread + "|D";
 
-      const y0 = reserve(key, cy + 3, 1);
+      const y0 = reserve(key, cy + 3*FS, 1);
       if(y0 == null) continue;
 
       const t = el("text",{class:"note-lbl", x:xDir, y:y0});
@@ -547,7 +564,7 @@ function render(){
       const cx = laneX(e.thread), cy = y(e[axisKey]);
       const side = sideOf(e.thread);
       const key = e.thread + (side > 0 ? "|D" : "|E");
-      const yl = reserve(key, cy + 3, 1);
+      const yl = reserve(key, cy + 3*FS, 1);
       if(yl == null) continue;
       gMk.appendChild(el("text",{class:"lam",
         x: cx + (G.bandW/2 + 5)*side, y: yl,
@@ -813,6 +830,14 @@ function repin(seq){
   tip.classList.add("pinned");
 }
 
+function setFs(i){
+  fsIdx = Math.max(0, Math.min(FS_STEPS.length-1, i));
+  try{ localStorage.setItem("sdtrace-fs", String(FS_STEPS[fsIdx])); }catch(e){}
+  applyFs();
+  if(events.length) render();
+}
+document.getElementById("fsDown").addEventListener("click", () => setFs(fsIdx-1));
+document.getElementById("fsUp").addEventListener("click",   () => setFs(fsIdx+1));
 zoomInput.addEventListener("input", e => zoomTo(+e.target.value, lastPointerY));
 
 wrap.addEventListener("mousemove", e => { lastPointerY = e.clientY; });
