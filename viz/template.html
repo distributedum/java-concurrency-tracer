@@ -128,6 +128,9 @@
   .band.WAITING{fill:var(--wait-fill); stroke:var(--wait)}
   .band.JOINING{fill:var(--join-fill); stroke:var(--join)}
   .band{stroke-width:1; rx:5}
+  .awaitBr{fill:none; stroke:var(--wait); stroke-width:2; stroke-linecap:round; stroke-linejoin:round; pointer-events:none}
+  .awaitLbl{fill:var(--wait); font-size:10px; font-weight:600; pointer-events:none}
+  .awaitRing{fill:none; stroke:var(--wait); stroke-width:1.4; stroke-dasharray:2 2; pointer-events:none}
   .lam{fill:var(--muted); font-size:10px}
   .note-lbl{fill:var(--muted); font-size:10.5px}
   .lam-in{fill:var(--faint)}
@@ -186,7 +189,7 @@
   </span>
   <span class="ctl-label" style="margin-left:6px">Arrows</span>
   <label class="toggle"><input type="checkbox" id="tHandoff" checked> lock handoff</label>
-  <label class="toggle"><input type="checkbox" id="tSignal" checked> signal → await</label>
+  <label class="toggle"><input type="checkbox" id="tSignal" checked> signal → lock request</label>
   <label class="toggle"><input type="checkbox" id="tLam" checked> L clocks</label>
   <label class="toggle"><input type="checkbox" id="tNotes" checked> marks</label>
   <label class="seg" style="cursor:pointer;margin-left:auto">
@@ -204,6 +207,7 @@
     <span class="key"><span class="swatch" style="background:var(--hold-fill-legend);border:1px solid var(--hold)"></span> critical section (exclusive)</span>
     <span class="key"><span class="swatch" style="background:repeating-linear-gradient(45deg,var(--shared-fill-legend),var(--shared-fill-legend) 2px,transparent 2px,transparent 4px);border:1px dashed var(--shared)"></span> read (shared)</span>
     <span class="key"><span class="swatch" style="background:var(--wait-fill-legend);border:1px solid var(--wait)"></span> waiting (condition)</span>
+    <span class="key"><span class="swatch" style="background:none;border:2px solid var(--wait);border-right:none;width:8px;height:11px;border-radius:2px 0 0 2px"></span> inside await() (release → request → reacquire)</span>
   </div>
   <div class="sep"></div>
   <div class="grp" id="glyphLegend"></div>
@@ -251,6 +255,21 @@ function stateSegments(events, axisKey){
     result.set(thread,{segments:segs, first:evs[0], last:evs[evs.length-1], events:evs});
   }
   return result;
+}
+// await() spans per thread: AWAIT_BEGIN .. AWAIT_WAKEUP. Events strictly inside
+// (the implicit release, the lock request and the reacquire) belong to the await.
+function awaitSpans(events){
+  const spans=[], inside=new Set(), open=new Map();
+  for(const e of events.slice().sort(bySeq)){
+    if(e.kind==="AWAIT_BEGIN") open.set(e.thread,{thread:e.thread, begin:e, seqs:[]});
+    else if(open.has(e.thread)){
+      const sp=open.get(e.thread);
+      if(e.kind==="AWAIT_WAKEUP"){ sp.end=e; spans.push(sp); open.delete(e.thread); }
+      else sp.seqs.push(e.seq);
+    }
+  }
+  for(const sp of spans) for(const q of sp.seqs) inside.add(q);
+  return {spans, inside};
 }
 function axisRange(events, axisKey){
   let lo=Infinity,hi=-Infinity;
@@ -419,6 +438,18 @@ function render(){
       gLanes.appendChild(el("rect",{class:"band "+s.state, x:cx-G.bandW/2, y:y0, width:G.bandW, height:Math.max(2,y1-y0), rx:5}));
     }
   }
+  // await() brackets: make explicit that the release/request/reacquire inside
+  // belong to the await(), spanning AWAIT_BEGIN -> AWAIT_WAKEUP.
+  const AW = awaitSpans(events); AWAITIN = AW.inside;
+  for(const sp of AW.spans){
+    const cx=laneX(sp.thread)-G.bandW/2-8;
+    const y0=y(sp.begin[axisKey]), y1=y(sp.end[axisKey]);
+    gLanes.appendChild(el("path",{class:"awaitBr", d:`M${cx+5},${y0} L${cx},${y0} L${cx},${y1} L${cx+5},${y1}`}));
+    if(y1-y0>46){
+      gLanes.appendChild(el("text",{class:"awaitLbl","text-anchor":"middle",
+        transform:`translate(${cx-5},${(y0+y1)/2}) rotate(-90)`},"await()"));
+    }
+  }
   svg.appendChild(gLanes);
 
   // causal arrows
@@ -450,6 +481,7 @@ function render(){
     const cx=laneX(e.thread), cy=y(e[axisKey]);
     const g=glyph(e.kind, cx, cy, e.mode, true);
     g.setAttribute("data-seq", e.seq);
+    if(AW.inside.has(e.seq)) g.insertBefore(el("circle",{cx,cy,r:8.5,class:"awaitRing"}), g.firstChild.nextSibling);
     gMk.appendChild(g);
   }
 
@@ -605,12 +637,14 @@ function wireHover(){
     });
   });
 }
+let AWAITIN=new Set();
 function showTip(e, ev, isPinned){
   const cs = causesOf(e).map(c=>idx.get(c)).filter(Boolean);
   let html = `<div class="k">${KIND_LABEL[e.kind]||e.kind}</div>`;
   html += `<div class="row">thread <b>${e.thread}</b> · seq <b>${e.seq}</b></div>`;
   if(e.lock) html += `<div class="row">lock <b>${e.lock}</b>${e.mode==="READ"?" · shared (read)":(e.mode==="WRITE"?" · exclusive (write)":"")}</div>`;
   if(e.cond) html += `<div class="row">condition <b>${e.cond}</b></div>`;
+  if(AWAITIN.has(e.seq)) html += `<div class="row" style="color:var(--wait)">part of <b>await()</b></div>`;
   html += `<div class="row">physical time <b>${(e.t/1e6).toFixed(2)} ms</b></div>`;
   if(e.detail) html += `<div class="row">${e.detail}</div>`;
   html += `<div class="lamx">Lamport clock = <b>${e.lamport}</b></div>`;
@@ -644,7 +678,7 @@ function buildStats(){
     `<div class="stat"><b class="mono">${threads.length}</b>threads</div>`
    +`<div class="stat"><b class="mono">${events.length}</b>events</div>`
    +`<div class="stat"><b class="mono">${handoffs}</b>lock handoffs</div>`
-   +`<div class="stat"><b class="mono">${sig}</b>signal → await</div>`;
+   +`<div class="stat"><b class="mono">${sig}</b>signal → lock request</div>`;
 }
 function buildGlyphLegend(){
   const items=[
